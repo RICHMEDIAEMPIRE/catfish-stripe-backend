@@ -10,24 +10,28 @@ app.use(express.json());
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
-    const quantity = req.body.quantity || 1;
+    const items = req.body.items;
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "No items in request." });
+    }
+
+    const line_items = items.map(item => ({
+      price_data: {
+        currency: "usd",
+        product_data: {
+          name: `Catfish Empire™ Sunglasses - ${item.color}`,
+          images: ["https://catfishempire.com/your-sunglasses-image.jpg"], // optional
+        },
+        unit_amount: 1499, // $14.99 in cents
+      },
+      quantity: item.qty,
+    }));
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: {
-              name: "Catfish Empire™ Sunglasses",
-              images: ["https://catfishempire.com/your-sunglasses-image.jpg"],
-            },
-            unit_amount: 1499,
-          },
-          quantity,
-        },
-      ],
+      line_items,
       shipping_options: [
         {
           shipping_rate_data: {
