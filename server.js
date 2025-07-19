@@ -5,7 +5,6 @@ const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 
-// Trust Render's reverse proxy to handle secure cookies properly
 app.set('trust proxy', 1);
 
 // In-memory inventory
@@ -20,6 +19,7 @@ let inventory = {
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 app.use(cors({
   origin: "https://test1243.netlify.app",
@@ -28,18 +28,18 @@ app.use(cors({
 
 app.use(express.json());
 
+// Session cookies
 app.use(session({
   secret: process.env.SESSION_SECRET || "mysecret",
   resave: false,
   saveUninitialized: false,
   cookie: {
-    sameSite: "none",  // Required for cross-origin cookies
-    secure: true       // Required because we're using HTTPS on Render
+    sameSite: "none",
+    secure: true
   }
 }));
 
 // ====== AUTH ======
-
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
@@ -54,7 +54,6 @@ app.post("/logout", (req, res) => {
 });
 
 // ====== INVENTORY ======
-
 app.get("/inventory", (req, res) => {
   console.log("[GET INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
@@ -79,7 +78,6 @@ app.post("/inventory", (req, res) => {
 });
 
 // ====== STRIPE CHECKOUT ======
-
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const items = req.body.items;
@@ -109,6 +107,9 @@ app.post("/create-checkout-session", async (req, res) => {
       payment_method_types: ["card"],
       mode: "payment",
       line_items,
+      metadata: {
+        items: JSON.stringify(items)
+      },
       shipping_options: [
         {
           shipping_rate_data: {
@@ -123,16 +124,44 @@ app.post("/create-checkout-session", async (req, res) => {
       cancel_url: "https://catfishempire.com/cart.html"
     });
 
-    // Deduct inventory after session created
-    items.forEach(item => {
-      inventory[item.color] -= item.qty;
-    });
-
     res.json({ url: session.url });
   } catch (err) {
     console.error("Stripe error:", err);
     res.status(500).json({ error: "Something went wrong." });
   }
+});
+
+// ====== STRIPE WEBHOOK ======
+app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers["stripe-signature"],
+      STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    console.error("Webhook Error:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const metadata = session.metadata;
+
+    if (metadata && metadata.items) {
+      const items = JSON.parse(metadata.items);
+      items.forEach(item => {
+        if (inventory[item.color] !== undefined) {
+          inventory[item.color] -= item.qty;
+        }
+      });
+      console.log("✅ Inventory updated from Stripe webhook:", inventory);
+    }
+  }
+
+  res.status(200).send("Received");
 });
 
 const PORT = process.env.PORT || 4242;
