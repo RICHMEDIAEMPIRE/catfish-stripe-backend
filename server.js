@@ -19,7 +19,11 @@ let inventory = {
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({
+  origin: "https://test1243.netlify.app",
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(session({
   secret: process.env.SESSION_SECRET || "mysecret",
