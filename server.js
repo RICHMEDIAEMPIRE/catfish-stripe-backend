@@ -30,8 +30,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    sameSite: "none",  // Required for cross-origin cookies
-    secure: true       // Required for sameSite: 'none'
+    httpOnly: true,
+    secure: true, // ✅ Must be true on Render (HTTPS)
+    sameSite: "none" // ✅ Required for cross-origin session cookies
   }
 }));
 
@@ -39,32 +40,44 @@ app.use(session({
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
+  console.log("[LOGIN ATTEMPT]", username);
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     req.session.authenticated = true;
+    console.log("[LOGIN SUCCESS]");
     return res.json({ success: true });
   }
+  console.log("[LOGIN FAILED]");
   res.status(401).json({ error: "Unauthorized" });
 });
 
 app.post("/logout", (req, res) => {
-  req.session.destroy(() => res.json({ success: true }));
+  req.session.destroy(() => {
+    console.log("[LOGOUT]");
+    res.json({ success: true });
+  });
 });
 
 // ====== INVENTORY ======
 
 app.get("/inventory", (req, res) => {
+  console.log("[GET INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
+    console.log("[GET INVENTORY] Not logged in");
     return res.status(403).json({ error: "Not logged in" });
   }
   res.json(inventory);
 });
 
 app.post("/inventory", (req, res) => {
+  console.log("[POST INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
+    console.log("[POST INVENTORY] Not logged in");
     return res.status(403).json({ error: "Not logged in" });
   }
 
   const { color, qty } = req.body;
+  console.log(`[UPDATE] ${color}: ${qty}`);
+
   if (!inventory.hasOwnProperty(color)) {
     return res.status(400).json({ error: "Invalid color" });
   }
