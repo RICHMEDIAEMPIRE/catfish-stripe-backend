@@ -5,6 +5,9 @@ const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 
+// Trust Render's reverse proxy to handle secure cookies properly
+app.set('trust proxy', 1);
+
 // In-memory inventory
 let inventory = {
   Blue: 10,
@@ -19,7 +22,7 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 app.use(cors({
-  origin: "https://test1243.netlify.app", // Your frontend
+  origin: "https://test1243.netlify.app",
   credentials: true
 }));
 
@@ -30,9 +33,8 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    httpOnly: true,
-    secure: true, // ✅ Must be true on Render (HTTPS)
-    sameSite: "none" // ✅ Required for cross-origin session cookies
+    sameSite: "none",  // Required for cross-origin cookies
+    secure: true       // Required because we're using HTTPS on Render
   }
 }));
 
@@ -40,21 +42,15 @@ app.use(session({
 
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
-  console.log("[LOGIN ATTEMPT]", username);
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
     req.session.authenticated = true;
-    console.log("[LOGIN SUCCESS]");
     return res.json({ success: true });
   }
-  console.log("[LOGIN FAILED]");
   res.status(401).json({ error: "Unauthorized" });
 });
 
 app.post("/logout", (req, res) => {
-  req.session.destroy(() => {
-    console.log("[LOGOUT]");
-    res.json({ success: true });
-  });
+  req.session.destroy(() => res.json({ success: true }));
 });
 
 // ====== INVENTORY ======
@@ -62,7 +58,6 @@ app.post("/logout", (req, res) => {
 app.get("/inventory", (req, res) => {
   console.log("[GET INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
-    console.log("[GET INVENTORY] Not logged in");
     return res.status(403).json({ error: "Not logged in" });
   }
   res.json(inventory);
@@ -71,13 +66,10 @@ app.get("/inventory", (req, res) => {
 app.post("/inventory", (req, res) => {
   console.log("[POST INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
-    console.log("[POST INVENTORY] Not logged in");
     return res.status(403).json({ error: "Not logged in" });
   }
 
   const { color, qty } = req.body;
-  console.log(`[UPDATE] ${color}: ${qty}`);
-
   if (!inventory.hasOwnProperty(color)) {
     return res.status(400).json({ error: "Invalid color" });
   }
