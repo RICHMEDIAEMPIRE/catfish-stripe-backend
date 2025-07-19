@@ -6,7 +6,7 @@ const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 
-// Inventory: basic in-memory storage (replace with database later)
+// Basic in-memory inventory (can upgrade to a DB later)
 let inventory = {
   Blue: 10,
   Green: 10,
@@ -20,7 +20,7 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 app.use(cors({
-  origin: "https://test1243.netlify.app",
+  origin: "https://test1243.netlify.app", // frontend URL
   credentials: true
 }));
 
@@ -28,10 +28,14 @@ app.use(express.json());
 app.use(session({
   secret: process.env.SESSION_SECRET || "mysecret",
   resave: false,
-  saveUninitialized: false
+  saveUninitialized: false,
+  cookie: {
+    sameSite: "none", // Required for cross-origin cookies
+    secure: true      // Required when using HTTPS (Render enforces HTTPS)
+  }
 }));
 
-// Login endpoint
+// Admin Login
 app.post("/login", (req, res) => {
   const { username, password } = req.body;
   if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
@@ -46,7 +50,7 @@ app.post("/logout", (req, res) => {
   req.session.destroy(() => res.json({ success: true }));
 });
 
-// Get current inventory
+// Get Inventory
 app.get("/inventory", (req, res) => {
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
@@ -54,7 +58,7 @@ app.get("/inventory", (req, res) => {
   res.json(inventory);
 });
 
-// Update inventory
+// Update Inventory
 app.post("/inventory", (req, res) => {
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
@@ -63,11 +67,16 @@ app.post("/inventory", (req, res) => {
   if (!inventory.hasOwnProperty(color)) {
     return res.status(400).json({ error: "Invalid color" });
   }
-  inventory[color] = parseInt(qty);
+  const parsedQty = parseInt(qty);
+  if (isNaN(parsedQty) || parsedQty < 0) {
+    return res.status(400).json({ error: "Invalid quantity" });
+  }
+  inventory[color] = parsedQty;
+  console.log(`Updated inventory: ${color} → ${parsedQty}`);
   res.json({ success: true });
 });
 
-// Stripe Checkout
+// Stripe Checkout Session
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const items = req.body.items;
@@ -88,7 +97,7 @@ app.post("/create-checkout-session", async (req, res) => {
           name: `Catfish Empire™ Sunglasses - ${item.color}`,
           images: ["https://catfishempire.com/your-sunglasses-image.jpg"]
         },
-        unit_amount: 1499
+        unit_amount: 1499 // $14.99
       },
       quantity: item.qty
     }));
@@ -101,7 +110,7 @@ app.post("/create-checkout-session", async (req, res) => {
         {
           shipping_rate_data: {
             type: "fixed_amount",
-            fixed_amount: { amount: 599, currency: "usd" },
+            fixed_amount: { amount: 599, currency: "usd" }, // $5.99 shipping
             display_name: "Flat Rate Shipping"
           }
         }
