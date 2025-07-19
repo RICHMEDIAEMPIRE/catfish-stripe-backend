@@ -7,6 +7,7 @@ const app = express();
 
 app.set("trust proxy", 1);
 
+// ====== INVENTORY ======
 let inventory = {
   Blue: 10,
   Green: 10,
@@ -16,11 +17,12 @@ let inventory = {
   Brown: 10
 };
 
+// ====== CONFIG ======
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
-// Middleware: JSON for all except /webhook
+// ====== MIDDLEWARE ======
 app.use((req, res, next) => {
   if (req.originalUrl === "/webhook") {
     express.raw({ type: "application/json" })(req, res, next);
@@ -30,7 +32,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: "https://test1243.netlify.app",
+  origin: "https://test1243.netlify.app", // Or your real site
   credentials: true
 }));
 
@@ -58,7 +60,12 @@ app.post("/logout", (req, res) => {
   req.session.destroy(() => res.json({ success: true }));
 });
 
-// ====== INVENTORY ======
+// ====== PUBLIC INVENTORY ======
+app.get("/public-inventory", (req, res) => {
+  res.json(inventory);
+});
+
+// ====== PROTECTED INVENTORY ======
 app.get("/inventory", (req, res) => {
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
@@ -127,6 +134,7 @@ app.post("/create-checkout-session", async (req, res) => {
       cancel_url: "https://catfishempire.com/cart.html"
     });
 
+    console.log("✅ Stripe session created:", session.url);
     res.json({ url: session.url });
   } catch (err) {
     console.error("Stripe error:", err);
@@ -167,5 +175,6 @@ app.post("/webhook", (req, res) => {
   res.status(200).send("Received");
 });
 
+// ====== START SERVER ======
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
