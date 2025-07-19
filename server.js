@@ -5,9 +5,8 @@ const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 
-app.set('trust proxy', 1);
+app.set("trust proxy", 1);
 
-// In-memory inventory
 let inventory = {
   Blue: 10,
   Green: 10,
@@ -21,14 +20,20 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
+// Middleware: JSON for all except /webhook
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook") {
+    express.raw({ type: "application/json" })(req, res, next);
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 app.use(cors({
   origin: "https://test1243.netlify.app",
   credentials: true
 }));
 
-app.use(express.json());
-
-// Session cookies
 app.use(session({
   secret: process.env.SESSION_SECRET || "mysecret",
   resave: false,
@@ -55,7 +60,6 @@ app.post("/logout", (req, res) => {
 
 // ====== INVENTORY ======
 app.get("/inventory", (req, res) => {
-  console.log("[GET INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
   }
@@ -63,7 +67,6 @@ app.get("/inventory", (req, res) => {
 });
 
 app.post("/inventory", (req, res) => {
-  console.log("[POST INVENTORY] Session:", req.session);
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
   }
@@ -132,7 +135,7 @@ app.post("/create-checkout-session", async (req, res) => {
 });
 
 // ====== STRIPE WEBHOOK ======
-app.post("/webhook", express.raw({ type: "application/json" }), (req, res) => {
+app.post("/webhook", (req, res) => {
   let event;
 
   try {
