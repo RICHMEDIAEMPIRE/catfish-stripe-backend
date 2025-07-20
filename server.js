@@ -7,6 +7,15 @@ const app = express();
 
 app.set("trust proxy", 1);
 
+// ====== RAW BODY FOR WEBHOOKS (MUST COME FIRST) ======
+app.use((req, res, next) => {
+  if (req.originalUrl === "/webhook") {
+    express.raw({ type: "application/json" })(req, res, next);
+  } else {
+    express.json()(req, res, next);
+  }
+});
+
 // ====== INVENTORY ======
 let inventory = {
   Blue: 10,
@@ -23,16 +32,8 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 // ====== MIDDLEWARE ======
-app.use((req, res, next) => {
-  if (req.originalUrl === "/webhook") {
-    express.raw({ type: "application/json" })(req, res, next);
-  } else {
-    express.json()(req, res, next);
-  }
-});
-
 app.use(cors({
-  origin: "https://catfishempire.com", // ✅ Production domain
+  origin: "https://catfishempire.com",
   credentials: true
 }));
 
@@ -53,6 +54,7 @@ app.post("/login", (req, res) => {
     req.session.authenticated = true;
     return res.json({ success: true });
   }
+  console.warn("❌ Failed login attempt:", { username });
   res.status(401).json({ error: "Unauthorized" });
 });
 
@@ -110,7 +112,7 @@ app.post("/create-checkout-session", async (req, res) => {
         },
         unit_amount: 1499
       },
-      quantity: item.qty
+      quantity: item.qty || 1
     }));
 
     const session = await stripe.checkout.sessions.create({
@@ -130,7 +132,7 @@ app.post("/create-checkout-session", async (req, res) => {
         }
       ],
       tax_id_collection: { enabled: true },
-      automatic_tax: { enabled: true }, // ✅ enables Stripe Tax
+      automatic_tax: { enabled: true },
       success_url: "https://catfishempire.com/success.html",
       cancel_url: "https://catfishempire.com/cart.html"
     });
@@ -154,7 +156,7 @@ app.post("/webhook", (req, res) => {
       STRIPE_WEBHOOK_SECRET
     );
   } catch (err) {
-    console.error("Webhook Error:", err.message);
+    console.error("❌ Webhook signature verification failed:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -170,6 +172,8 @@ app.post("/webhook", (req, res) => {
         }
       });
       console.log("✅ Inventory updated from Stripe webhook:", inventory);
+    } else {
+      console.warn("⚠️ No metadata.items found in webhook payload.");
     }
   }
 
@@ -178,4 +182,4 @@ app.post("/webhook", (req, res) => {
 
 // ====== START SERVER ======
 const PORT = process.env.PORT || 4242;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
