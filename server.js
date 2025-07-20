@@ -32,7 +32,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: "https://test1243.netlify.app", // Or your real site
+  origin: "https://catfishempire.com", // ✅ Updated to production domain
   credentials: true
 }));
 
