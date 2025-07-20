@@ -32,7 +32,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: "https://catfishempire.com", // ✅ Updated to production domain
+  origin: "https://catfishempire.com", // ✅ Production domain
   credentials: true
 }));
 
@@ -130,6 +130,7 @@ app.post("/create-checkout-session", async (req, res) => {
         }
       ],
       tax_id_collection: { enabled: true },
+      automatic_tax: { enabled: true }, // ✅ enables Stripe Tax
       success_url: "https://catfishempire.com/success.html",
       cancel_url: "https://catfishempire.com/cart.html"
     });
