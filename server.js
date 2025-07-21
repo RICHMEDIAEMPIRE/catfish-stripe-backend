@@ -93,7 +93,6 @@ app.post("/inventory", (req, res) => {
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const items = req.body.items;
-    const receiptEmail = req.body.email;
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "No items in request." });
@@ -120,15 +119,15 @@ app.post("/create-checkout-session", async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
+      customer_creation: "always",
       line_items,
+      shipping_address_collection: {
+        allowed_countries: ['US']
+      },
       metadata: {
         items: JSON.stringify(items),
         store_owner_email: "rich@richmediaempire.com"
       },
-      shipping_address_collection: {
-        allowed_countries: ['US']
-      },
-      customer_email: receiptEmail,
       shipping_options: [
         {
           shipping_rate_data: {
