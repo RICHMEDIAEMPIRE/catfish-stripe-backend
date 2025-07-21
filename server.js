@@ -222,6 +222,58 @@ ${orderSummary}
 
   res.status(200).send("Received");
 });
+// ====== TEST EMAIL ENDPOINT ======
+app.post("/test-email", async (req, res) => {
+  if (!req.session.authenticated) {
+    return res.status(403).json({ error: "Not authorized" });
+  }
+
+  const nodemailer = require("nodemailer");
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT),
+      secure: true,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    });
+
+    const fakeOrder = {
+      email: "yourpersonal@email.com",
+      shipping: {
+        name: "Test User",
+        address: {
+          line1: "123 Test Lane",
+          city: "Charlotte",
+          state: "NC",
+          postal_code: "28202",
+          country: "US"
+        }
+      },
+      items: [
+        { color: "Red", qty: 1 },
+        { color: "Blue", qty: 2 }
+      ]
+    };
+
+    const summary = fakeOrder.items.map(i => `${i.qty}x ${i.color}`).join(", ");
+
+    await transporter.sendMail({
+      from: `"Catfish Empire Orders" <${process.env.SMTP_USER}>`,
+      to: ["rich@richmediaempire.com", fakeOrder.email],
+      subject: "✅ Test Order Confirmation - Catfish Empire™",
+      text: `Shipping to: ${fakeOrder.shipping.name}, ${fakeOrder.shipping.address.line1}, ${fakeOrder.shipping.address.city}, ${fakeOrder.shipping.address.state} ${fakeOrder.shipping.address.postal_code}\n\nOrder:\n${summary}`
+    });
+
+    res.json({ success: true, message: "Test email sent!" });
+  } catch (err) {
+    console.error("❌ Failed to send test email:", err);
+    res.status(500).json({ error: "Email test failed." });
+  }
+});
 
 // ====== START SERVER ======
 const PORT = process.env.PORT || 4242;
