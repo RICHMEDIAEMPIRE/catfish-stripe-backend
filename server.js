@@ -175,8 +175,15 @@ app.post("/webhook", (req, res) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const metadata = session.metadata;
-    const shipping = session.shipping?.address || {};
-    const email = session.customer_email || "unknown";
+    const email = session.customer_details?.email || "unknown";
+
+    const shipping =
+      session.shipping?.address ||
+      session.collected_information?.shipping_details?.address || {};
+
+    const shippingName =
+      session.shipping?.name ||
+      session.collected_information?.shipping_details?.name || "";
 
     if (metadata && metadata.items) {
       const items = JSON.parse(metadata.items);
@@ -192,7 +199,7 @@ app.post("/webhook", (req, res) => {
 New Order Received:
 
 📦 Shipping To:
-${shipping.name || ""}  
+${shippingName}  
 ${shipping.line1 || ""}  
 ${shipping.line2 || ""}  
 ${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}
@@ -205,14 +212,14 @@ ${orderSummary}
 
       transporter.sendMail({
         from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
-        to: "rich@richmediaempire.com",
+        to: ["rich@richmediaempire.com", email],
         subject: "New Catfish Empire Order",
         text: message
       }, (err, info) => {
         if (err) {
           console.error("❌ Failed to send email:", err);
         } else {
-          console.log("📨 Order email sent to rich@richmediaempire.com:", info.response);
+          console.log("📨 Order email sent:", info.response);
         }
       });
 
@@ -222,25 +229,14 @@ ${orderSummary}
 
   res.status(200).send("Received");
 });
+
 // ====== TEST EMAIL ENDPOINT ======
 app.post("/test-email", async (req, res) => {
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not authorized" });
   }
 
-  const nodemailer = require("nodemailer");
-// dummy change to trigger build
   try {
-    const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT),
-      secure: true,
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      }
-    });
-
     const fakeOrder = {
       email: "yourpersonal@email.com",
       shipping: {
