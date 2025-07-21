@@ -3,8 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const app = express();
+const nodemailer = require("nodemailer");
 
+const app = express();
 app.set("trust proxy", 1);
 
 // ====== RAW BODY FOR WEBHOOKS (MUST COME FIRST) ======
@@ -31,6 +32,17 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
+// ====== EMAIL TRANSPORT ======
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT),
+  secure: true,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
 // ====== MIDDLEWARE ======
 app.use(cors({
   origin: "https://catfishempire.com",
@@ -54,7 +66,6 @@ app.post("/login", (req, res) => {
     req.session.authenticated = true;
     return res.json({ success: true });
   }
-  console.warn("❌ Failed login attempt:", { username });
   res.status(401).json({ error: "Unauthorized" });
 });
 
@@ -121,29 +132,24 @@ app.post("/create-checkout-session", async (req, res) => {
       mode: "payment",
       customer_creation: "always",
       line_items,
-      shipping_address_collection: {
-        allowed_countries: ['US']
-      },
+      shipping_address_collection: { allowed_countries: ['US'] },
       metadata: {
         items: JSON.stringify(items),
         store_owner_email: "rich@richmediaempire.com"
       },
-      shipping_options: [
-        {
-          shipping_rate_data: {
-            type: "fixed_amount",
-            fixed_amount: { amount: 599, currency: "usd" },
-            display_name: "Flat Rate Shipping"
-          }
+      shipping_options: [{
+        shipping_rate_data: {
+          type: "fixed_amount",
+          fixed_amount: { amount: 599, currency: "usd" },
+          display_name: "Flat Rate Shipping"
         }
-      ],
+      }],
       tax_id_collection: { enabled: true },
       automatic_tax: { enabled: true },
       success_url: "https://catfishempire.com/success.html",
       cancel_url: "https://catfishempire.com/cart.html"
     });
 
-    console.log("✅ Stripe session created:", session.url);
     res.json({ url: session.url });
   } catch (err) {
     console.error("Stripe error:", err);
@@ -169,6 +175,8 @@ app.post("/webhook", (req, res) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const metadata = session.metadata;
+    const shipping = session.shipping?.address || {};
+    const email = session.customer_email || "unknown";
 
     if (metadata && metadata.items) {
       const items = JSON.parse(metadata.items);
@@ -178,12 +186,37 @@ app.post("/webhook", (req, res) => {
         }
       });
 
+      const orderSummary = items.map(item => `${item.qty} x ${item.color}`).join("\n");
+
+      const message = `
+New Order Received:
+
+📦 Shipping To:
+${shipping.name || ""}  
+${shipping.line1 || ""}  
+${shipping.line2 || ""}  
+${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}
+
+📧 Customer Email: ${email}
+
+🕶️ Items Ordered:
+${orderSummary}
+      `;
+
+      transporter.sendMail({
+        from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
+        to: "rich@richmediaempire.com",
+        subject: "New Catfish Empire Order",
+        text: message
+      }, (err, info) => {
+        if (err) {
+          console.error("❌ Failed to send email:", err);
+        } else {
+          console.log("📨 Order email sent to rich@richmediaempire.com:", info.response);
+        }
+      });
+
       console.log("✅ Inventory updated from Stripe webhook:", inventory);
-      console.log("📦 Shipping address:", session.shipping?.address);
-      console.log("📧 Customer email:", session.customer_email);
-      console.log("📨 Send order to store owner:", metadata.store_owner_email);
-    } else {
-      console.warn("⚠️ No metadata.items found in webhook payload.");
     }
   }
 
