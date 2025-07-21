@@ -93,6 +93,8 @@ app.post("/inventory", (req, res) => {
 app.post("/create-checkout-session", async (req, res) => {
   try {
     const items = req.body.items;
+    const receiptEmail = req.body.email;
+
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "No items in request." });
     }
@@ -120,8 +122,13 @@ app.post("/create-checkout-session", async (req, res) => {
       mode: "payment",
       line_items,
       metadata: {
-        items: JSON.stringify(items)
+        items: JSON.stringify(items),
+        store_owner_email: "rich@richmediaempire.com"
       },
+      shipping_address_collection: {
+        allowed_countries: ['US']
+      },
+      customer_email: receiptEmail,
       shipping_options: [
         {
           shipping_rate_data: {
@@ -171,7 +178,11 @@ app.post("/webhook", (req, res) => {
           inventory[item.color] -= item.qty;
         }
       });
+
       console.log("✅ Inventory updated from Stripe webhook:", inventory);
+      console.log("📦 Shipping address:", session.shipping?.address);
+      console.log("📧 Customer email:", session.customer_email);
+      console.log("📨 Send order to store owner:", metadata.store_owner_email);
     } else {
       console.warn("⚠️ No metadata.items found in webhook payload.");
     }
