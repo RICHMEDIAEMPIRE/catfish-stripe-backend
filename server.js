@@ -1,4 +1,4 @@
-// ===== FINAL server.js (Test Mode - $0.50 Pricing) =====
+// ===== FINAL server.js (Test Mode - $0.50 Pricing + Working Payment Server) =====
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
