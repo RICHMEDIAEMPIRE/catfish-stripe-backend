@@ -1,4 +1,3 @@
-// ===== FINAL server.js (Updated with shipTo + email fix) =====
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -106,7 +105,7 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT ($0.50 Pricing) =====
+// ===== STRIPE CHECKOUT ($0.50 Pricing - No Shipping) =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
@@ -120,20 +119,12 @@ app.post("/create-checkout-session", async (req, res) => {
         price_data: {
           currency: "usd",
           product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 1499
+          unit_amount: 50
         },
         quantity: item.qty
       })),
       metadata: { items: JSON.stringify(items) },
-      shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: true },
-      shipping_options: [{
-        shipping_rate_data: {
-          type: "fixed_amount",
-          fixed_amount: { amount: 599, currency: "usd" },
-          display_name: "Flat Rate Shipping"
-        }
-      }],
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`
     });
@@ -161,9 +152,8 @@ app.post("/webhook", async (req, res) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const items = JSON.parse(session.metadata?.items || "[]");
-
-    const shipping = session.shipping?.address || session.collected_information?.shipping_details?.address || {};
-    const name = session.shipping?.name || session.collected_information?.shipping_details?.name || "Unknown Name";
+    const shipping = session.shipping?.address || {};
+    const name = session.shipping?.name || "unknown";
     const email = session.customer_email || "unknown";
 
     let updated = [];
@@ -193,5 +183,6 @@ app.post("/webhook", async (req, res) => {
   res.json({ received: true });
 });
 
+// ===== START SERVER =====
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => console.log(`🚀 Server live on ${PORT}`));
