@@ -119,7 +119,7 @@ app.post("/create-checkout-session", async (req, res) => {
         price_data: {
           currency: "usd",
           product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 1499
+          unit_amount: 0050
         },
         quantity: item.qty
       })),
