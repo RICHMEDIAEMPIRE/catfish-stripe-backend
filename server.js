@@ -6,7 +6,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
-app.set("trust proxy", 1); // needed for secure cookies behind proxy
+app.set("trust proxy", 1);
 
 // Stripe Webhook must come before body parsing
 app.post("/webhook", express.raw({ type: "application/json" }));
@@ -115,8 +115,7 @@ app.post("/inventory", async (req, res) => {
   }
 });
 
-// ===== Stripe Checkout with price_data =====
-// ===== Stripe Checkout with fixed price_data (50 cents each) =====
+// ===== Stripe Checkout with fixed price_data =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) {
@@ -133,7 +132,7 @@ app.post("/create-checkout-session", async (req, res) => {
           product_data: {
             name: `Catfish Empire™ ${item.color} Sunglasses`
           },
-          unit_amount: 50 // <-- 50 cents for testing
+          unit_amount: 1499
         },
         quantity: item.qty
       })),
@@ -162,8 +161,30 @@ app.post("/webhook", async (req, res) => {
   }
 
   if (event.type === "checkout.session.completed") {
-    // optionally process the order or sync with Supabase if needed
-    console.log("✅ Payment complete:", event.data.object.id);
+    const session = event.data.object;
+
+    try {
+      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 100 });
+
+      for (const item of lineItems.data) {
+        const match = item.description.match(/^(\w+) Sunglasses$/i);
+        if (match) {
+          const color = match[1].trim();
+          const purchasedQty = item.quantity;
+
+          if (color && inventory[color] !== undefined) {
+            const newQty = inventory[color] - purchasedQty;
+            await updateQuantity(color, newQty);
+            inventory[color] = newQty;
+            console.log(`🕶️ ${color} inventory updated to ${newQty}`);
+          } else {
+            console.warn(`⚠️ Unknown color: "${color}"`);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("❌ Failed to update inventory from webhook:", err);
+    }
   }
 
   res.json({ received: true });
