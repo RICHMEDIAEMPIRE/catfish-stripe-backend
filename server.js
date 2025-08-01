@@ -1,3 +1,4 @@
+// ===== FINAL server.js (Test Mode - $0.50 Pricing) =====
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -105,7 +106,7 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT =====
+// ===== STRIPE CHECKOUT ($0.50 Pricing) =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
