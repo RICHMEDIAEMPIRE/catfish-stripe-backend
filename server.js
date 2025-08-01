@@ -8,37 +8,37 @@ const { createClient } = require("@supabase/supabase-js");
 const app = express();
 app.set("trust proxy", 1);
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+// ✅ Add JSON and URLENCODED middleware BEFORE session
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// ===== CORS =====
+// ✅ Session setup
+app.use(session({
+  secret: process.env.SESSION_SECRET || "changeme",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: false, // true if using HTTPS
+    httpOnly: true,
+    sameSite: "lax"
+  }
+}));
+
+// ✅ CORS setup (with credentials)
 app.use(cors({
   origin: ["https://catfishempire.com", "http://localhost:3000"],
   credentials: true,
 }));
 
-// ===== RAW BODY FOR WEBHOOKS =====
-app.use((req, res, next) => {
-  if (req.originalUrl === "/webhook") {
-    express.raw({ type: "application/json" })(req, res, next);
-  } else {
-    express.json()(req, res, next);
-  }
-});
-
-// ===== SESSION =====
-app.use(session({
-  secret: process.env.SESSION_SECRET || "changeme",
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false }, // Set true if using HTTPS
-}));
+// ✅ Supabase setup
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // ===== In-memory cache =====
 let inventory = {};
 
-// ===== Load inventory from Supabase =====
+// ===== Load inventory =====
 async function loadInventory() {
   const { data, error } = await supabase.from("inventory").select("color, quantity");
   if (error) throw error;
@@ -55,13 +55,13 @@ async function updateQuantity(color, qty) {
   if (error) throw error;
 }
 
-// ===== INIT INVENTORY =====
+// ===== INIT Inventory =====
 loadInventory().then(inv => {
   inventory = inv;
   console.log("Inventory loaded:", inventory);
 }).catch(err => console.error("Failed to load inventory", err));
 
-// ===== PUBLIC INVENTORY (showcase) =====
+// ===== Public (showcase) =====
 app.get("/public-inventory", async (req, res) => {
   try {
     const inv = await loadInventory();
@@ -72,7 +72,7 @@ app.get("/public-inventory", async (req, res) => {
   }
 });
 
-// ===== AUTHENTICATED INVENTORY (admin) =====
+// ===== Authenticated (admin) =====
 app.get("/inventory", async (req, res) => {
   if (!req.session.authenticated) {
     return res.status(403).json({ error: "Not logged in" });
@@ -91,6 +91,7 @@ app.post("/login", (req, res) => {
   const { password } = req.body;
   if (password === process.env.ADMIN_PASSWORD) {
     req.session.authenticated = true;
+    console.log("Login successful");
     return res.json({ success: true });
   }
   res.status(401).json({ error: "Invalid password" });
@@ -98,8 +99,9 @@ app.post("/login", (req, res) => {
 
 // ===== LOGOUT =====
 app.post("/logout", (req, res) => {
-  req.session.destroy();
-  res.json({ success: true });
+  req.session.destroy(() => {
+    res.json({ success: true });
+  });
 });
 
 // ===== UPDATE INVENTORY =====
@@ -118,7 +120,7 @@ app.post("/inventory", async (req, res) => {
   }
 });
 
-// ===== STRIPE CHECKOUT =====
+// ===== Stripe Checkout =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   try {
@@ -156,8 +158,8 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-// ===== STRIPE WEBHOOK =====
-app.post("/webhook", async (req, res) => {
+// ===== Stripe Webhook =====
+app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   let event;
   try {
     event = stripe.webhooks.constructEvent(
@@ -193,7 +195,7 @@ app.post("/webhook", async (req, res) => {
   res.json({ received: true });
 });
 
-// ===== START SERVER =====
+// ===== Start Server =====
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
