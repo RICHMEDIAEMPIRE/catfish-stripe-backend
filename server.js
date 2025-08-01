@@ -105,7 +105,7 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT ($0.50 Pricing - No Shipping) =====
+// ===== STRIPE CHECKOUT ($0.50 Pricing, No Shipping) =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
@@ -140,11 +140,7 @@ app.post("/create-checkout-session", async (req, res) => {
 app.post("/webhook", async (req, res) => {
   let event;
   try {
-    event = stripe.webhooks.constructEvent(
-      req.body,
-      req.headers["stripe-signature"],
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
@@ -152,9 +148,18 @@ app.post("/webhook", async (req, res) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const items = JSON.parse(session.metadata?.items || "[]");
-    const shipping = session.shipping?.address || {};
-    const name = session.shipping?.name || "unknown";
-    const email = session.customer_email || "unknown";
+
+    // ⬇️ Fix for missing shipping/email
+    const shipping =
+      session.shipping?.address ||
+      session.collected_information?.shipping_details?.address || {};
+    const name =
+      session.shipping?.name ||
+      session.collected_information?.shipping_details?.name || "unknown";
+    const email =
+      session.customer_email ||
+      session.customer_details?.email ||
+      "unknown";
 
     let updated = [];
     for (const item of items) {
@@ -165,7 +170,17 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    const message = `New Order:\n\nShip To:\n${name}\n${shipping.line1 || ""}\n${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}\n\nEmail: ${email}\n\nItems:\n${updated.join("\n")}`;
+    const message = `New Order:
+
+Ship To:
+${name}
+${shipping.line1 || "—"}
+${shipping.city || "—"}, ${shipping.state || "—"} ${shipping.postal_code || "—"}
+
+Email: ${email}
+
+Items:
+${updated.join("\n")}`;
 
     transporter.sendMail({
       from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
@@ -183,6 +198,5 @@ app.post("/webhook", async (req, res) => {
   res.json({ received: true });
 });
 
-// ===== START SERVER =====
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => console.log(`🚀 Server live on ${PORT}`));
