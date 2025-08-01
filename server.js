@@ -105,7 +105,7 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT ($0.50 Pricing, No Shipping) =====
+// ===== STRIPE CHECKOUT (TEST MODE — $0.50, No Shipping Fee) =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
@@ -119,12 +119,13 @@ app.post("/create-checkout-session", async (req, res) => {
         price_data: {
           currency: "usd",
           product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 50
+          unit_amount: 50 // TEST MODE — $0.50 per item
         },
         quantity: item.qty
       })),
       metadata: { items: JSON.stringify(items) },
-      automatic_tax: { enabled: true },
+      shipping_address_collection: { allowed_countries: ["US"] },
+      automatic_tax: { enabled: false },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`
     });
@@ -136,51 +137,53 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-// ===== STRIPE WEBHOOK =====
+// ===== STRIPE WEBHOOK — Send Email After Purchase =====
 app.post("/webhook", async (req, res) => {
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers["stripe-signature"],
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
+
     const items = JSON.parse(session.metadata?.items || "[]");
 
-    // ⬇️ Fix for missing shipping/email
-    const shipping =
-      session.shipping?.address ||
-      session.collected_information?.shipping_details?.address || {};
-    const name =
-      session.shipping?.name ||
-      session.collected_information?.shipping_details?.name || "unknown";
-    const email =
-      session.customer_email ||
-      session.customer_details?.email ||
-      "unknown";
+    // Corrected shipping info pull — compatible with both formats
+    const shipping = session.shipping?.address ||
+                     session.collected_information?.shipping_details?.address || {};
+
+    const shippingName = session.shipping?.name || session.customer_details?.name || "No name";
+    const email = session.customer_email || session.customer_details?.email || "Unknown email";
 
     let updated = [];
     for (const item of items) {
       if (inventory[item.color] !== undefined) {
         inventory[item.color] -= item.qty;
         await updateQuantity(item.color, inventory[item.color]);
-        updated.push(`${item.qty} x ${item.color}`);
+        updated.push(`${item.qty} × ${item.color}`);
       }
     }
 
-    const message = `New Order:
+    const message = `🧾 NEW ORDER
 
-Ship To:
-${name}
-${shipping.line1 || "—"}
-${shipping.city || "—"}, ${shipping.state || "—"} ${shipping.postal_code || "—"}
+👤 Name: ${shippingName}
+📧 Email: ${email}
 
-Email: ${email}
+📦 Ship To:
+${shipping.line1 || ""} ${shipping.line2 || ""}
+${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}
+${shipping.country || "USA"}
 
-Items:
-${updated.join("\n")}`;
+🕶️ Items:
+${updated.join("\n")}
+`;
 
     transporter.sendMail({
       from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
@@ -198,5 +201,6 @@ ${updated.join("\n")}`;
   res.json({ received: true });
 });
 
+// ===== START SERVER =====
 const PORT = process.env.PORT || 4242;
 app.listen(PORT, () => console.log(`🚀 Server live on ${PORT}`));
