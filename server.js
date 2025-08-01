@@ -105,7 +105,7 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT (TEST MODE — $0.50, No Shipping Fee) =====
+// ===== STRIPE CHECKOUT ($14.99 + $5.99 Shipping) =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
@@ -119,13 +119,20 @@ app.post("/create-checkout-session", async (req, res) => {
         price_data: {
           currency: "usd",
           product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 50 // TEST MODE — $0.50 per item
+          unit_amount: 1499
         },
         quantity: item.qty
       })),
       metadata: { items: JSON.stringify(items) },
       shipping_address_collection: { allowed_countries: ["US"] },
-      automatic_tax: { enabled: false },
+      automatic_tax: { enabled: true },
+      shipping_options: [{
+        shipping_rate_data: {
+          type: "fixed_amount",
+          fixed_amount: { amount: 599, currency: "usd" },
+          display_name: "Flat Rate Shipping"
+        }
+      }],
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`
     });
@@ -137,7 +144,7 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-// ===== STRIPE WEBHOOK — Send Email After Purchase =====
+// ===== STRIPE WEBHOOK — Send Order Email =====
 app.post("/webhook", async (req, res) => {
   let event;
   try {
@@ -155,7 +162,7 @@ app.post("/webhook", async (req, res) => {
 
     const items = JSON.parse(session.metadata?.items || "[]");
 
-    // Corrected shipping info pull — compatible with both formats
+    // Pull shipping info from both supported formats
     const shipping = session.shipping?.address ||
                      session.collected_information?.shipping_details?.address || {};
 
