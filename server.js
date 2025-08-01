@@ -1,4 +1,4 @@
-// ===== FINAL server.js (Test Mode - $0.50 Pricing + Working Payment Server) =====
+// ===== FINAL server.js (Updated with shipTo + email fix) =====
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -149,7 +149,11 @@ app.post("/create-checkout-session", async (req, res) => {
 app.post("/webhook", async (req, res) => {
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, req.headers["stripe-signature"], process.env.STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers["stripe-signature"],
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
@@ -157,7 +161,9 @@ app.post("/webhook", async (req, res) => {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
     const items = JSON.parse(session.metadata?.items || "[]");
-    const shipping = session.shipping?.address || {};
+
+    const shipping = session.shipping?.address || session.collected_information?.shipping_details?.address || {};
+    const name = session.shipping?.name || session.collected_information?.shipping_details?.name || "Unknown Name";
     const email = session.customer_email || "unknown";
 
     let updated = [];
@@ -169,7 +175,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
-    const message = `New Order:\n\nShip To:\n${shipping.name}\n${shipping.line1}\n${shipping.city}, ${shipping.state} ${shipping.postal_code}\n\nEmail: ${email}\n\nItems:\n${updated.join("\n")}`;
+    const message = `New Order:\n\nShip To:\n${name}\n${shipping.line1 || ""}\n${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}\n\nEmail: ${email}\n\nItems:\n${updated.join("\n")}`;
 
     transporter.sendMail({
       from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
