@@ -105,9 +105,9 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
-// ===== STRIPE CHECKOUT ($14.99 + $5.99 Shipping) =====
+// ===== STRIPE CHECKOUT =====
 app.post("/create-checkout-session", async (req, res) => {
-  const { items } = req.body;
+  const { items, shippingState } = req.body;
   if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
 
   try {
@@ -123,7 +123,10 @@ app.post("/create-checkout-session", async (req, res) => {
         },
         quantity: item.qty
       })),
-      metadata: { items: JSON.stringify(items) },
+      metadata: {
+        items: JSON.stringify(items),
+        shippingState: shippingState || "Unknown"
+      },
       shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: true },
       shipping_options: [{
@@ -144,7 +147,7 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-// ===== STRIPE WEBHOOK — Send Order Email =====
+// ===== STRIPE WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   let event;
   try {
@@ -161,8 +164,8 @@ app.post("/webhook", async (req, res) => {
     const session = event.data.object;
 
     const items = JSON.parse(session.metadata?.items || "[]");
+    const shippingState = session.metadata?.shippingState || "Unknown";
 
-    // Pull shipping info from both supported formats
     const shipping = session.shipping?.address ||
                      session.collected_information?.shipping_details?.address || {};
 
@@ -187,6 +190,7 @@ app.post("/webhook", async (req, res) => {
 ${shipping.line1 || ""} ${shipping.line2 || ""}
 ${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}
 ${shipping.country || "USA"}
+🗺️ Shipping State (client-supplied): ${shippingState}
 
 🕶️ Items:
 ${updated.join("\n")}
