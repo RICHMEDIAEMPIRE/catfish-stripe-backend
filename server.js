@@ -7,9 +7,9 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
 
-// Scraper deps
+// Scraper deps (install: npm i cheerio node-fetch@2)
 const cheerio = require("cheerio");
-const fetch = require("node-fetch"); // use node-fetch@2
+const fetch = require("node-fetch"); // v2 for CommonJS
 
 const app = express();
 app.set("trust proxy", 1);
@@ -32,7 +32,9 @@ const supabase = createClient(
 let inventory = {};
 
 async function loadInventory() {
-  const { data, error } = await supabase.from("inventory").select("color, quantity");
+  const { data, error } = await supabase
+    .from("inventory")
+    .select("color, quantity");
   if (error) throw error;
   const inv = {};
   data.forEach((i) => (inv[i.color.trim()] = i.quantity));
@@ -87,8 +89,10 @@ app.get("/etsy/section", cors(), async (_req, res) => {
       return res.json(ETSY_CACHE.data);
     }
 
-    // 1) Pull RSS
-    const rssText = await (await fetch(ETSY_RSS_URL, { headers: { "user-agent": "Mozilla/5.0" } })).text();
+    // 1) Pull RSS (reliable title/link/price/cover)
+    const rssText = await (
+      await fetch(ETSY_RSS_URL, { headers: { "user-agent": "Mozilla/5.0" } })
+    ).text();
     const $x = cheerio.load(rssText, { xmlMode: true });
 
     const items = [];
@@ -104,26 +108,25 @@ app.get("/etsy/section", cors(), async (_req, res) => {
       const desc = $x(it).find("description").first().text() || "";
       const descPrice = (desc.match(/\$\s?\d+(?:[\.,]\d{2})?/) || [""])[0];
 
-      const imgCandidates = new Set();
+      const imgs = new Set();
       const mediaUrl =
         $x(it).find("media\\:content").attr("url") ||
         $x(it).find("media\\:thumbnail").attr("url") ||
         $x(it).find("enclosure").attr("url") ||
         $x(it).find("g\\:image_link").first().text().trim() ||
         "";
-
-      if (mediaUrl) imgCandidates.add(mediaUrl);
+      if (mediaUrl) imgs.add(mediaUrl);
 
       const contentEncoded = $x(it).find("content\\:encoded").first().text();
       if (contentEncoded) {
         const $c = cheerio.load(contentEncoded);
         $c("img").each((_, img) => {
           const src = $c(img).attr("src");
-          if (src) imgCandidates.add(src);
+          if (src) imgs.add(src);
         });
       }
 
-      const cover = Array.from(imgCandidates)
+      const cover = Array.from(imgs)
         .map((u) => {
           if (!u) return "";
           if (u.startsWith("//")) return "https:" + u;
@@ -142,9 +145,11 @@ app.get("/etsy/section", cors(), async (_req, res) => {
       }
     });
 
-    // Fallback: section page for URLs if RSS was empty
+    // Fallback: section page for URLs if RSS empty
     if (items.length === 0) {
-      const html = await (await fetch(ETSY_SECTION_URL, { headers: { "user-agent": "Mozilla/5.0" } })).text();
+      const html = await (
+        await fetch(ETSY_SECTION_URL, { headers: { "user-agent": "Mozilla/5.0" } })
+      ).text();
       const $ = cheerio.load(html);
       const set = new Set();
       $('a[href*="/listing/"]').each((_, a) => {
@@ -159,10 +164,12 @@ app.get("/etsy/section", cors(), async (_req, res) => {
       }
     }
 
-    // 2) Augment each listing with gallery images
+    // 2) Augment gallery per listing
     async function augmentListing(listing) {
       try {
-        const page = await (await fetch(listing.url, { headers: { "user-agent": "Mozilla/5.0" } })).text();
+        const page = await (
+          await fetch(listing.url, { headers: { "user-agent": "Mozilla/5.0" } })
+        ).text();
         const $ = cheerio.load(page);
 
         const gallery = new Set(listing.images);
@@ -175,8 +182,7 @@ app.get("/etsy/section", cors(), async (_req, res) => {
             const json = JSON.parse(raw);
             const nodes = Array.isArray(json) ? json : [json];
             for (const n of nodes) {
-              if (!n) continue;
-              const t = n["@type"];
+              const t = n && n["@type"];
               const isProduct = t === "Product" || (Array.isArray(t) && t.includes("Product"));
               if (!isProduct) continue;
 
@@ -191,9 +197,11 @@ app.get("/etsy/section", cors(), async (_req, res) => {
                 }
               }
 
-              const imgs = Array.isArray(n.image) ? n.image : n.image ? [n.image] : [];
-              imgs.forEach((u) =>
-                gallery.add(String(u).replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull."))
+              const arr = Array.isArray(n.image) ? n.image : n.image ? [n.image] : [];
+              arr.forEach((u) =>
+                gallery.add(
+                  String(u).replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull.")
+                )
               );
             }
           } catch {}
@@ -224,7 +232,7 @@ app.get("/etsy/section", cors(), async (_req, res) => {
     }
 
     const out = [];
-    const urls = items.slice(0, 30); // safety cap
+    const urls = items.slice(0, 30);
     const BATCH = 3;
     for (let i = 0; i < urls.length; i += BATCH) {
       const batch = urls.slice(i, i + BATCH).map(augmentListing);
@@ -270,14 +278,16 @@ app.get("/public-inventory", async (req, res) => {
 });
 
 app.get("/inventory", async (req, res) => {
-  if (!req.session.authenticated) return res.status(403).json({ error: "Not logged in" });
+  if (!req.session.authenticated)
+    return res.status(403).json({ error: "Not logged in" });
   const inv = await loadInventory();
   inventory = inv;
   res.json(inv);
 });
 
 app.post("/inventory", async (req, res) => {
-  if (!req.session.authenticated) return res.status(403).json({ error: "Not logged in" });
+  if (!req.session.authenticated)
+    return res.status(403).json({ error: "Not logged in" });
   const { color, qty } = req.body;
   const qtyInt = parseInt(qty, 10);
   await updateQuantity(color, qtyInt);
@@ -288,7 +298,8 @@ app.post("/inventory", async (req, res) => {
 // ===== STRIPE CHECKOUT =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items, shippingState } = req.body;
-  if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
+  if (!items || !Array.isArray(items))
+    return res.status(400).json({ error: "Invalid cart format" });
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -353,8 +364,10 @@ app.post("/webhook", async (req, res) => {
       session.collected_information?.shipping_details?.address ||
       {};
 
-    const shippingName = session.shipping?.name || session.customer_details?.name || "No name";
-    const email = session.customer_email || session.customer_details?.email || "Unknown email";
+    const shippingName =
+      session.shipping?.name || session.customer_details?.name || "No name";
+    const email =
+      session.customer_email || session.customer_details?.email || "Unknown email";
 
     let updated = [];
     for (const item of items) {
@@ -400,5 +413,5 @@ ${updated.join("\n")}
 });
 
 // ===== START SERVER =====
-const PORT = process.env.PORT || 4242;
+const PORT = process.env.PORT || 4242; // Render injects PORT (e.g., 10000)
 app.listen(PORT, () => console.log(`🚀 Server live on ${PORT}`));
