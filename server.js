@@ -7,7 +7,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const nodemailer = require("nodemailer");
 const { createClient } = require("@supabase/supabase-js");
 
-// Scraper deps
+// Scraper deps (install: npm i cheerio node-fetch@2)
 const cheerio = require("cheerio");
 const fetch = require("node-fetch"); // v2 for CommonJS
 
@@ -24,20 +24,31 @@ app.use((req, res, next) => {
 });
 
 // ===== SUPABASE INVENTORY =====
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 let inventory = {};
+
 async function loadInventory() {
-  const { data, error } = await supabase.from("inventory").select("color, quantity");
+  const { data, error } = await supabase
+    .from("inventory")
+    .select("color, quantity");
   if (error) throw error;
   const inv = {};
   data.forEach((i) => (inv[i.color.trim()] = i.quantity));
   return inv;
 }
+
 async function updateQuantity(color, qty) {
-  const { error } = await supabase.from("inventory").update({ quantity: qty }).eq("color", color);
+  const { error } = await supabase
+    .from("inventory")
+    .update({ quantity: qty })
+    .eq("color", color);
   if (error) throw error;
 }
+
 loadInventory().then((inv) => (inventory = inv));
 
 // ===== EMAIL SETUP =====
@@ -63,7 +74,7 @@ app.use(
 app.get("/health", (_req, res) => res.json({ ok: true, time: Date.now() }));
 
 // =====================================================================
-// ===================== ETSY SECTION SCRAPER ===========================
+// ============= ETSY SECTION SCRAPER (RSS + optional gallery) =========
 // =====================================================================
 const ETSY_SECTION_URL =
   "https://www.etsy.com/shop/RICHMEDIAEMPIRE?ref=profile_header&sort_order=price_asc&section_id=54071039";
@@ -71,7 +82,23 @@ const ETSY_RSS_URL = "https://www.etsy.com/shop/RICHMEDIAEMPIRE/rss";
 
 let ETSY_CACHE = { data: null, ts: 0 };
 const ETSY_TTL_MS = 15 * 60 * 1000; // 15 minutes
-const REQ_HEADERS = {
+
+// When SCRAPERAPI_KEY is set, we route page fetches through it to avoid 403.
+function buildProxyUrl(target) {
+  const key = process.env.SCRAPERAPI_KEY;
+  if (!key) return null;
+  const base = "https://api.scraperapi.com/";
+  const params = new URLSearchParams({
+    api_key: key,
+    url: target,
+    render: "true",          // render JS if Etsy needs it
+    country_code: "us",      // US pages
+    keep_headers: "true"
+  });
+  return `${base}?${params.toString()}`;
+}
+
+const BROWSER_HEADERS = {
   "user-agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
   accept:
@@ -88,8 +115,8 @@ app.get("/etsy/section", cors(), async (req, res) => {
       return res.json(ETSY_CACHE.data);
     }
 
-    // 1) Pull RSS for titles/links/prices/cover
-    const rssText = await (await fetch(ETSY_RSS_URL, { headers: REQ_HEADERS })).text();
+    // 1) Pull RSS (reliable titles/links/prices/cover image when present)
+    const rssText = await (await fetch(ETSY_RSS_URL, { headers: BROWSER_HEADERS })).text();
     const $x = cheerio.load(rssText, { xmlMode: true });
 
     const items = [];
@@ -105,25 +132,25 @@ app.get("/etsy/section", cors(), async (req, res) => {
       const desc = $x(it).find("description").first().text() || "";
       const descPrice = (desc.match(/\$\s?\d+(?:[\.,]\d{2})?/) || [""])[0];
 
-      const imgs = new Set();
+      const imgCandidates = new Set();
       const mediaUrl =
         $x(it).find("media\\:content").attr("url") ||
         $x(it).find("media\\:thumbnail").attr("url") ||
         $x(it).find("enclosure").attr("url") ||
         $x(it).find("g\\:image_link").first().text().trim() ||
         "";
-      if (mediaUrl) imgs.add(mediaUrl);
+      if (mediaUrl) imgCandidates.add(mediaUrl);
 
       const contentEncoded = $x(it).find("content\\:encoded").first().text();
       if (contentEncoded) {
         const $c = cheerio.load(contentEncoded);
         $c("img").each((_, img) => {
           const src = $c(img).attr("src");
-          if (src) imgs.add(src);
+          if (src) imgCandidates.add(src);
         });
       }
 
-      const cover = Array.from(imgs)
+      const cover = Array.from(imgCandidates)
         .map((u) => {
           if (!u) return "";
           if (u.startsWith("//")) return "https:" + u;
@@ -137,14 +164,14 @@ app.get("/etsy/section", cors(), async (req, res) => {
           url,
           title: title || "Etsy Listing",
           price: priceNs || descPrice || "",
-          images: cover ? [cover] : [],
+          images: cover ? [cover] : [], // one safe image without hitting listing page
         });
       }
     });
 
     // Fallback: section page for URLs if RSS empty
     if (items.length === 0) {
-      const html = await (await fetch(ETSY_SECTION_URL, { headers: REQ_HEADERS })).text();
+      const html = await (await fetch(ETSY_SECTION_URL, { headers: BROWSER_HEADERS })).text();
       const $ = cheerio.load(html);
       const set = new Set();
       $('a[href*="/listing/"]').each((_, a) => {
@@ -159,29 +186,23 @@ app.get("/etsy/section", cors(), async (req, res) => {
       }
     }
 
-    // 2) Augment each listing with gallery images (DOM + raw regex)
-    function addSrcsetTo(set, val) {
-      if (!val) return;
-      val.split(",").forEach((part) => {
-        const u = part.trim().split(" ")[0];
-        if (u) set.add(u);
-      });
-    }
-    const IMG_URL_RX =
-      /https?:\/\/i\.etsystatic\.com\/[^\s"'()<>]+?\.(?:jpg|jpeg|png|webp)/gi;
-
+    // 2) OPTIONAL: Augment each listing with gallery images
+    // Only if you provided SCRAPERAPI_KEY; otherwise we keep the cover image.
     async function augmentListing(listing) {
+      const proxied = buildProxyUrl(listing.url);
+      if (!proxied) return listing; // no proxy key, skip
+
       try {
-        const pageRes = await fetch(listing.url, { headers: REQ_HEADERS });
+        const pageRes = await fetch(proxied, { headers: BROWSER_HEADERS });
         if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status}`);
         const page = await pageRes.text();
-
-        const gallery = new Set(listing.images);
         const $ = cheerio.load(page);
 
-        // Titles/prices (JSON-LD)
+        const gallery = new Set(listing.images);
         let title = listing.title;
         let price = listing.price;
+
+        // JSON-LD
         $('script[type="application/ld+json"]').each((_, s) => {
           try {
             const raw = $(s).contents().text() || "{}";
@@ -202,12 +223,12 @@ app.get("/etsy/section", cors(), async (req, res) => {
                 }
               }
               const arr = Array.isArray(n.image) ? n.image : n.image ? [n.image] : [];
-              arr.forEach((u) => gallery.add(u));
+              arr.forEach((u) => gallery.add(String(u)));
             }
           } catch {}
         });
 
-        // OG & link rel=image_src
+        // OG + link rel=image_src
         $('meta[property="og:image"], meta[property="og:image:secure_url"]').each((_, m) => {
           const u = $(m).attr("content");
           if (u) gallery.add(u);
@@ -217,26 +238,22 @@ app.get("/etsy/section", cors(), async (req, res) => {
           if (u) gallery.add(u);
         });
 
-        // srcset and regular img/src
-        $("source[srcset]").each((_, s) => addSrcsetTo(gallery, $(s).attr("srcset")));
-        $("img[srcset]").each((_, s) => addSrcsetTo(gallery, $(s).attr("srcset")));
+        // srcset + img src
+        function addSrcset(val) {
+          if (!val) return;
+          val.split(",").forEach((part) => {
+            const u = part.trim().split(" ")[0];
+            if (u) gallery.add(u);
+          });
+        }
+        $("source[srcset]").each((_, s) => addSrcset($(s).attr("srcset")));
+        $("img[srcset]").each((_, s) => addSrcset($(s).attr("srcset")));
         $("img").each((_, img) => {
           const u = $(img).attr("src") || $(img).attr("data-src") || "";
           if (u) gallery.add(u);
         });
 
-        // background-image styles
-        $('[style*="background-image"]').each((_, el) => {
-          const style = ($(el).attr("style") || "").toString();
-          const m = style.match(/url\((['"]?)(.*?)\1\)/i);
-          if (m && m[2]) gallery.add(m[2]);
-        });
-
-        // RAW regex across the whole HTML (catches hydration data)
-        const rawMatches = page.match(IMG_URL_RX) || [];
-        rawMatches.forEach((u) => gallery.add(u));
-
-        // Normalize, dedupe, cap
+        // Normalize/dedupe/cap
         const outImgs = Array.from(gallery)
           .map((u) => {
             if (!u) return "";
@@ -254,18 +271,21 @@ app.get("/etsy/section", cors(), async (req, res) => {
         };
       } catch (e) {
         console.warn("augmentListing failed:", listing.url, e.message);
-        return listing;
+        return listing; // keep RSS cover
       }
     }
 
-    const out = [];
-    const urls = items.slice(0, 30); // safety cap
-    const BATCH = 3;
-    for (let i = 0; i < urls.length; i += BATCH) {
-      const batch = urls.slice(i, i + BATCH).map(augmentListing);
-      const resBatch = await Promise.all(batch);
-      out.push(...resBatch);
-      await new Promise((r) => setTimeout(r, 250)); // polite pacing
+    const useProxy = !!process.env.SCRAPERAPI_KEY;
+    let out = items;
+    if (useProxy) {
+      out = [];
+      const BATCH = 3;
+      for (let i = 0; i < items.length; i += BATCH) {
+        const batch = items.slice(i, i + BATCH).map(augmentListing);
+        const results = await Promise.all(batch);
+        out.push(...results);
+        await new Promise((r) => setTimeout(r, 250));
+      }
     }
 
     ETSY_CACHE = { data: out, ts: Date.now() };
@@ -277,9 +297,10 @@ app.get("/etsy/section", cors(), async (req, res) => {
 });
 
 // =====================================================================
-// ======================== EXISTING ENDPOINTS ==========================
+// ========================= EXISTING ENDPOINTS =========================
 // =====================================================================
 
+// ===== LOGIN =====
 app.post("/login", (req, res) => {
   const { password } = req.body;
   if (password === process.env.ADMIN_PASSWORD) {
@@ -293,6 +314,7 @@ app.post("/logout", (req, res) => {
   req.session.destroy(() => res.json({ success: true }));
 });
 
+// ===== INVENTORY ENDPOINTS =====
 app.get("/public-inventory", async (req, res) => {
   try {
     const inv = await loadInventory();
@@ -304,14 +326,16 @@ app.get("/public-inventory", async (req, res) => {
 });
 
 app.get("/inventory", async (req, res) => {
-  if (!req.session.authenticated) return res.status(403).json({ error: "Not logged in" });
+  if (!req.session.authenticated)
+    return res.status(403).json({ error: "Not logged in" });
   const inv = await loadInventory();
   inventory = inv;
   res.json(inv);
 });
 
 app.post("/inventory", async (req, res) => {
-  if (!req.session.authenticated) return res.status(403).json({ error: "Not logged in" });
+  if (!req.session.authenticated)
+    return res.status(403).json({ error: "Not logged in" });
   const { color, qty } = req.body;
   const qtyInt = parseInt(qty, 10);
   await updateQuantity(color, qtyInt);
@@ -319,9 +343,11 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
+// ===== STRIPE CHECKOUT =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items, shippingState } = req.body;
-  if (!items || !Array.isArray(items)) return res.status(400).json({ error: "Invalid cart format" });
+  if (!items || !Array.isArray(items))
+    return res.status(400).json({ error: "Invalid cart format" });
 
   try {
     const session = await stripe.checkout.sessions.create({
@@ -336,7 +362,10 @@ app.post("/create-checkout-session", async (req, res) => {
         },
         quantity: item.qty,
       })),
-      metadata: { items: JSON.stringify(items), shippingState: shippingState || "Unknown" },
+      metadata: {
+        items: JSON.stringify(items),
+        shippingState: shippingState || "Unknown",
+      },
       shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: true },
       shipping_options: [
@@ -359,6 +388,7 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
+// ===== STRIPE WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   let event;
   try {
@@ -382,8 +412,10 @@ app.post("/webhook", async (req, res) => {
       session.collected_information?.shipping_details?.address ||
       {};
 
-    const shippingName = session.shipping?.name || session.customer_details?.name || "No name";
-    const email = session.customer_email || session.customer_details?.email || "Unknown email";
+    const shippingName =
+      session.shipping?.name || session.customer_details?.name || "No name";
+    const email =
+      session.customer_email || session.customer_details?.email || "Unknown email";
 
     let updated = [];
     for (const item of items) {
@@ -410,8 +442,16 @@ ${updated.join("\n")}
 `;
 
     transporter.sendMail(
-      { from: `"Catfish Empire" <${process.env.SMTP_USER}>`, to: "rich@richmediaempire.com", subject: "New Order Received", text: message },
-      (err) => { if (err) console.error("❌ Email failed:", err); else console.log("📨 Order email sent"); }
+      {
+        from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
+        to: "rich@richmediaempire.com",
+        subject: "New Order Received",
+        text: message,
+      },
+      (err) => {
+        if (err) console.error("❌ Email failed:", err);
+        else console.log("📨 Order email sent");
+      }
     );
 
     console.log("✅ Inventory updated from payment");
@@ -421,5 +461,5 @@ ${updated.join("\n")}
 });
 
 // ===== START SERVER =====
-const PORT = process.env.PORT || 4242; // Render injects PORT (e.g., 10000)
+const PORT = process.env.PORT || 4242; // Render injects PORT
 app.listen(PORT, () => console.log(`🚀 Server live on ${PORT}`));
