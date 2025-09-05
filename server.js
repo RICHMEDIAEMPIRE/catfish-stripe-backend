@@ -63,9 +63,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // ===== SESSION & CORS =====
-app.use(
-  cors({ origin: process.env.CLIENT_URL, credentials: true })
-);
+app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "changeme",
@@ -75,11 +73,11 @@ app.use(
   })
 );
 
-// ===== SIMPLE HEALTH CHECK (useful while testing) =====
+// ===== SIMPLE HEALTH CHECK =====
 app.get("/health", (_req, res) => res.json({ ok: true, time: Date.now() }));
 
 // =====================================================================
-// =============== ETSY SECTION SCRAPER (NEW, SAFE TO ADD) ==============
+// =============== ETSY SECTION SCRAPER (JSON-LD based) =================
 // =====================================================================
 // Update to your exact Etsy section URL if needed
 const ETSY_SECTION_URL =
@@ -89,87 +87,121 @@ const ETSY_SECTION_URL =
 let ETSY_CACHE = { data: null, ts: 0 };
 const ETSY_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-// Allow your test domain to call this even if CLIENT_URL is your prod site
 app.get("/etsy/section", cors(), async (_req, res) => {
   try {
-    // serve cached data if fresh
     if (ETSY_CACHE.data && Date.now() - ETSY_CACHE.ts < ETSY_TTL_MS) {
       return res.json(ETSY_CACHE.data);
     }
 
-    // 1) Fetch your Etsy section page
+    // 1) Fetch the section page and collect listing URLs
     const html = await (
-      await fetch(ETSY_SECTION_URL, {
-        headers: { "user-agent": "Mozilla/5.0" },
-      })
+      await fetch(ETSY_SECTION_URL, { headers: { "user-agent": "Mozilla/5.0" } })
     ).text();
     const $ = cheerio.load(html);
 
-    // 2) Collect listing URLs + titles + prices (best-effort selectors)
-    const items = [];
-    $("a").each((_, a) => {
-      const href = $(a).attr("href") || "";
-      const text = $(a).text().trim();
-      if (/\/listing\//.test(href) && text) {
-        const parent = $(a).parent();
-        // try to find a nearby price on the card
-        const priceText =
-          parent.text().match(/\$\s?\d+[\.,]?\d*/)?.[0] || "";
-        const title = text.replace(/Add to Favorites/i, "").trim();
-        items.push({ url: href.split("?")[0], title, price: priceText });
+    const urlSet = new Set();
+    $('a[href*="/listing/"]').each((_, a) => {
+      let href = $(a).attr("href") || "";
+      if (!href) return;
+      href = href.split("?")[0].split("#")[0];
+      if (href.startsWith("//")) href = "https:" + href;
+      if (href.startsWith("/")) href = "https://www.etsy.com" + href;
+      if (/^https?:\/\/(www\.)?etsy\.com\/listing\/\d+/.test(href)) {
+        urlSet.add(href);
       }
     });
 
-    // de-dupe by url
-    const map = new Map();
-    for (const it of items) if (!map.has(it.url)) map.set(it.url, it);
-    const listings = Array.from(map.values()).slice(0, 24); // safety cap
+    let listingUrls = Array.from(urlSet);
 
-    // 3) For each listing, fetch gallery images
-    async function scrapeListing(listing) {
+    // Fallback: shop RSS if nothing found (grabs ~10)
+    if (listingUrls.length === 0) {
+      const rssUrl = "https://www.etsy.com/shop/RICHMEDIAEMPIRE/rss";
+      const rss = await (
+        await fetch(rssUrl, { headers: { "user-agent": "Mozilla/5.0" } })
+      ).text();
+      const $$ = cheerio.load(rss, { xmlMode: true });
+      $$("item > link").each((_, el) => {
+        const href = $$(el).text().trim();
+        if (href && /^https?:\/\/(www\.)?etsy\.com\/listing\/\d+/.test(href)) {
+          listingUrls.push(href);
+        }
+      });
+      listingUrls = Array.from(new Set(listingUrls));
+    }
+
+    // 2) Visit each listing and parse JSON-LD for title/price/images
+    async function scrapeListing(url) {
       try {
         const page = await (
-          await fetch(listing.url, {
-            headers: { "user-agent": "Mozilla/5.0" },
-          })
+          await fetch(url, { headers: { "user-agent": "Mozilla/5.0" } })
         ).text();
         const $$ = cheerio.load(page);
+        let title = "";
+        let price = "";
+        let images = [];
 
-        const imgs = new Set();
-        $$("img").each((_, img) => {
-          const src = $$(img).attr("src") || $$(img).attr("data-src") || "";
-          const alt = ($$(img).attr("alt") || "").toLowerCase();
-          if (src && /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(src) && alt) {
-            // try to upgrade to full size for Etsy assets
-            imgs.add(src.replace(/il_\d+x\d+\./, "il_fullxfull."));
-          }
+        $$('script[type="application/ld+json"]').each((_, s) => {
+          try {
+            const raw = $$(s).contents().text() || "{}";
+            const json = JSON.parse(raw);
+            const nodes = Array.isArray(json) ? json : [json];
+            for (const node of nodes) {
+              if (!node) continue;
+              const type = node["@type"];
+              const isProduct =
+                type === "Product" ||
+                (Array.isArray(type) && type.includes("Product"));
+              if (!isProduct) continue;
+
+              if (!title && node.name) title = String(node.name);
+
+              if (!price) {
+                const offer = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+                if (offer) {
+                  if (offer.price) price = `$${offer.price}`;
+                  else if (offer.priceSpecification?.price) {
+                    const cur = offer.priceSpecification.priceCurrency || "$";
+                    price = `${cur} ${offer.priceSpecification.price}`;
+                  }
+                }
+              }
+
+              if (!images.length && node.image) {
+                images = Array.isArray(node.image) ? node.image : [node.image];
+              }
+            }
+          } catch {}
         });
 
-        // fallback: accept any il_ product images if above didn’t catch
-        if (imgs.size === 0) {
+        if (!images.length) {
+          const seen = new Set();
           $$("img").each((_, img) => {
-            const src = $$(img).attr("src") || "";
-            if (src.includes("il_") && /\.(jpg|jpeg|png|webp)/i.test(src)) {
-              imgs.add(src);
+            const src = $$(img).attr("src") || $$(img).attr("data-src") || "";
+            if (/\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(src)) {
+              seen.add(src.replace(/il_\d+x\d+\./, "il_fullxfull."));
             }
           });
+          images = Array.from(seen);
         }
 
-        return { ...listing, images: Array.from(imgs).slice(0, 12) };
+        return { url, title: title || "Etsy Listing", price: price || "", images: images.slice(0, 12) };
       } catch (e) {
-        console.error("Listing scrape failed:", listing.url, e.message);
-        return { ...listing, images: [] };
+        console.error("Listing scrape failed:", url, e.message);
+        return { url, title: "Etsy Listing", price: "", images: [] };
       }
     }
 
-    const results = [];
-    // serial to be polite; swap to limited concurrency if you like
-    for (const l of listings) {
-      results.push(await scrapeListing(l));
+    // polite limited concurrency
+    const out = [];
+    const batchSize = 3;
+    for (let i = 0; i < listingUrls.length; i += batchSize) {
+      const batch = listingUrls.slice(i, i + batchSize).map(scrapeListing);
+      const results = await Promise.all(batch);
+      out.push(...results);
     }
 
-    ETSY_CACHE = { data: results, ts: Date.now() };
-    res.json(results);
+    ETSY_CACHE = { data: out, ts: Date.now() };
+    res.json(out);
   } catch (e) {
     console.error("Etsy scrape failed:", e);
     res.status(500).json({ error: "Etsy scrape failed" });
