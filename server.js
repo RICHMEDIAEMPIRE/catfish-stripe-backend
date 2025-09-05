@@ -83,16 +83,25 @@ const ETSY_RSS_URL = "https://www.etsy.com/shop/RICHMEDIAEMPIRE/rss";
 let ETSY_CACHE = { data: null, ts: 0 };
 const ETSY_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-app.get("/etsy/section", cors(), async (_req, res) => {
+const REQ_HEADERS = {
+  "user-agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "accept-language": "en-US,en;q=0.9",
+  referer: "https://www.etsy.com/",
+  "upgrade-insecure-requests": "1",
+};
+
+app.get("/etsy/section", cors(), async (req, res) => {
   try {
-    if (ETSY_CACHE.data && Date.now() - ETSY_CACHE.ts < ETSY_TTL_MS) {
+    const bypassCache = "nocache" in req.query;
+    if (!bypassCache && ETSY_CACHE.data && Date.now() - ETSY_CACHE.ts < ETSY_TTL_MS) {
       return res.json(ETSY_CACHE.data);
     }
 
     // 1) Pull RSS (reliable title/link/price/cover)
-    const rssText = await (
-      await fetch(ETSY_RSS_URL, { headers: { "user-agent": "Mozilla/5.0" } })
-    ).text();
+    const rssText = await (await fetch(ETSY_RSS_URL, { headers: REQ_HEADERS })).text();
     const $x = cheerio.load(rssText, { xmlMode: true });
 
     const items = [];
@@ -147,9 +156,7 @@ app.get("/etsy/section", cors(), async (_req, res) => {
 
     // Fallback: section page for URLs if RSS empty
     if (items.length === 0) {
-      const html = await (
-        await fetch(ETSY_SECTION_URL, { headers: { "user-agent": "Mozilla/5.0" } })
-      ).text();
+      const html = await (await fetch(ETSY_SECTION_URL, { headers: REQ_HEADERS })).text();
       const $ = cheerio.load(html);
       const set = new Set();
       $('a[href*="/listing/"]').each((_, a) => {
@@ -164,25 +171,27 @@ app.get("/etsy/section", cors(), async (_req, res) => {
       }
     }
 
-    // 2) Augment gallery per listing
+    // 2) Augment each listing with gallery images
     async function augmentListing(listing) {
       try {
-        const page = await (
-          await fetch(listing.url, { headers: { "user-agent": "Mozilla/5.0" } })
-        ).text();
+        const pageRes = await fetch(listing.url, { headers: REQ_HEADERS });
+        if (!pageRes.ok) throw new Error(`HTTP ${pageRes.status}`);
+        const page = await pageRes.text();
         const $ = cheerio.load(page);
 
         const gallery = new Set(listing.images);
         let title = listing.title;
         let price = listing.price;
 
+        // (a) JSON-LD Product
         $('script[type="application/ld+json"]').each((_, s) => {
           try {
             const raw = $(s).contents().text() || "{}";
             const json = JSON.parse(raw);
             const nodes = Array.isArray(json) ? json : [json];
             for (const n of nodes) {
-              const t = n && n["@type"];
+              if (!n) continue;
+              const t = n["@type"];
               const isProduct = t === "Product" || (Array.isArray(t) && t.includes("Product"));
               if (!isProduct) continue;
 
@@ -207,14 +216,33 @@ app.get("/etsy/section", cors(), async (_req, res) => {
           } catch {}
         });
 
+        // (b) OpenGraph & link rel=image_src
         $('meta[property="og:image"], meta[property="og:image:secure_url"]').each((_, m) => {
           const u = $(m).attr("content");
           if (u) gallery.add(u.replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull."));
         });
+        $('link[rel="image_src"]').each((_, l) => {
+          const u = $(l).attr("href");
+          if (u) gallery.add(u.replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull."));
+        });
 
+        // (c) <picture><source srcset="..."> + <img srcset="...">
+        function addSrcset(val) {
+          if (!val) return;
+          val.split(",").forEach((part) => {
+            const u = part.trim().split(" ")[0];
+            if (u && /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(u)) {
+              gallery.add(u.replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull."));
+            }
+          });
+        }
+        $("source[srcset]").each((_, s) => addSrcset($(s).attr("srcset")));
+        $("img[srcset]").each((_, s) => addSrcset($(s).attr("srcset")));
+
+        // (d) Any remaining <img> with i.etsystatic.com or il_ pattern
         $("img").each((_, img) => {
           const u = $(img).attr("src") || $(img).attr("data-src") || "";
-          if (/\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(u)) {
+          if (/i\.etsystatic\.com/.test(u) || /il_[0-9]+x/.test(u) || /\.(jpg|jpeg|png|webp)(\?.*)?$/i.test(u)) {
             gallery.add(u.replace(/^http:\/\//i, "https://").replace(/il_\d+x\d+\./, "il_fullxfull."));
           }
         });
@@ -232,7 +260,7 @@ app.get("/etsy/section", cors(), async (_req, res) => {
     }
 
     const out = [];
-    const urls = items.slice(0, 30);
+    const urls = items.slice(0, 30); // safety cap
     const BATCH = 3;
     for (let i = 0; i < urls.length; i += BATCH) {
       const batch = urls.slice(i, i + BATCH).map(augmentListing);
