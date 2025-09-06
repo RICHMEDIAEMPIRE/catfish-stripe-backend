@@ -324,8 +324,9 @@ app.get("/printful/products", cors(), async (req, res) => {
     const productsResponse = await fetch('https://api.printful.com/store/products', {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish-Empire/1.0'
       }
     });
 
@@ -348,8 +349,9 @@ app.get("/printful/products", cors(), async (req, res) => {
         const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${printfulApiKey}`,
-            'Content-Type': 'application/json'
+            'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Catfish-Empire/1.0'
           }
         });
 
@@ -431,8 +433,9 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     const productsResponse = await fetch('https://api.printful.com/store/products', {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish-Empire/1.0'
       }
     });
 
@@ -467,8 +470,9 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${printfulApiKey}`,
-            'Content-Type': 'application/json'
+            'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Catfish-Empire/1.0'
           }
         });
 
