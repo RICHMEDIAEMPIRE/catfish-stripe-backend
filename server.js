@@ -303,6 +303,12 @@ app.get("/etsy/section", cors(), async (req, res) => {
 // Global cache for store_id
 let cachedStoreId = null;
 
+// Clear cached store ID (useful for debugging or error recovery)
+const clearStoreIdCache = () => {
+  console.log("🗑️ Clearing cached store ID");
+  cachedStoreId = null;
+};
+
 // Get Printful store ID (cached)
 const getPrintfulStoreId = async () => {
   if (cachedStoreId) {
@@ -310,41 +316,60 @@ const getPrintfulStoreId = async () => {
     return cachedStoreId;
   }
 
-  console.log("🔍 Fetching store information...");
+  console.log("🔍 Fetching store information from /store endpoint...");
   
-  const storeResponse = await fetch('https://api.printful.com/stores', {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'Catfish Empire Server'
+  try {
+    const storeResponse = await fetch('https://api.printful.com/store', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+
+    const storeData = await storeResponse.json();
+    
+    if (!storeResponse.ok) {
+      console.error(`❌ Printful store API error: ${storeResponse.status} - ${JSON.stringify(storeData)}`);
+      throw new Error(`Failed to fetch store information: ${storeResponse.status} - ${storeData?.error?.message || 'Unknown error'}`);
     }
-  });
 
-  const storeData = await storeResponse.json();
-  
-  if (!storeResponse.ok) {
-    throw new Error(`Printful stores API error: ${storeResponse.status} - ${JSON.stringify(storeData)}`);
+    console.log("🏪 Store data fetched successfully:", JSON.stringify(storeData, null, 2));
+    
+    // Check if store data has the expected structure
+    if (!storeData.result || !storeData.result.id) {
+      console.error("❌ Invalid store data structure:", storeData);
+      throw new Error('Store ID not found in API response. Expected result.id field.');
+    }
+    
+    cachedStoreId = storeData.result.id;
+    console.log(`✅ Successfully cached store ID: ${cachedStoreId}`);
+    
+    return cachedStoreId;
+    
+  } catch (error) {
+    console.error("❌ Error fetching store ID:", error.message);
+    // Reset cached store ID on error
+    cachedStoreId = null;
+    throw new Error(`Unable to retrieve store ID: ${error.message}`);
   }
-
-  console.log("🏪 Store data:", JSON.stringify(storeData, null, 2));
-  
-  const stores = storeData.result || [];
-  if (stores.length === 0) {
-    throw new Error('No stores found in Printful account');
-  }
-  
-  cachedStoreId = stores[0].id;
-  console.log(`🎯 Cached store ID: ${cachedStoreId}`);
-  
-  return cachedStoreId;
 };
 
 // Centralized Printful products fetch function with OAuth 2.0 Bearer token
 const fetchPrintfulProducts = async () => {
   try {
+    console.log("🚀 Starting Printful products fetch...");
+    
+    // Get store ID dynamically
     const storeId = await getPrintfulStoreId();
+    
+    if (!storeId) {
+      throw new Error('Store ID is missing or invalid');
+    }
 
+    console.log(`📡 Fetching products from store ID: ${storeId}`);
+    
     // Now fetch products from the specific store
     const response = await fetch(`https://api.printful.com/stores/${storeId}/products`, {
       method: 'GET',
@@ -358,13 +383,23 @@ const fetchPrintfulProducts = async () => {
     const data = await response.json();
 
     if (!response.ok) {
-      throw new Error(`Printful API error: ${response.status} - ${JSON.stringify(data)}`);
+      console.error(`❌ Products fetch failed: ${response.status} - ${JSON.stringify(data)}`);
+      throw new Error(`Printful products API error: ${response.status} - ${data?.error?.message || 'Unknown error'}`);
     }
 
+    console.log(`✅ Successfully fetched products. Status: ${response.status}, Code: ${data.code}`);
     console.log("🛒 Raw Printful product data:", JSON.stringify(data, null, 2));
+    
+    // Validate response structure
+    if (data.code !== 200) {
+      console.error(`❌ API returned error code: ${data.code} - ${data.error || 'Unknown error'}`);
+      throw new Error(`Printful API error code: ${data.code} - ${data.error || 'Unknown error'}`);
+    }
+    
     return data;
   } catch (err) {
     console.error('❌ Printful fetch error:', err.message);
+    console.error('❌ Full error details:', err);
     throw err;
   }
 };
@@ -647,10 +682,27 @@ app.get("/debug/env", cors(), async (req, res) => {
         exists: !!adminPass,
         length: adminPass ? adminPass.length : 0
       },
+      storeCache: {
+        hasCachedId: !!cachedStoreId,
+        cachedId: cachedStoreId ? `${cachedStoreId.toString().substring(0, 4)}...` : null
+      },
       allEnvKeys: Object.keys(process.env).filter(key => 
         key.includes('PRINTFUL') || key.includes('ADMIN') || key.includes('SUPABASE')
       ),
-      message: "Printful deprecated Basic auth - you need a new OAuth 2.0 token"
+      message: "Printful uses OAuth 2.0 Bearer tokens with dynamic store ID fetching"
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Debug endpoint to clear store cache (REMOVE IN PRODUCTION)
+app.post("/debug/clear-store-cache", cors(), async (req, res) => {
+  try {
+    clearStoreIdCache();
+    res.json({ 
+      success: true, 
+      message: "Store ID cache cleared successfully" 
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
