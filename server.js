@@ -827,6 +827,8 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     if (sectionParam) {
       // For accurate filtering, fetch details and check sync_product.name
       const filtered = [];
+      const normalizedSection = sectionParam.replace(/-/g, ' ').trim();
+      const matchedNames = [];
       for (const p of allProducts) {
         try {
           const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
@@ -839,13 +841,18 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           });
           if (!dResp.ok) continue;
           const dJson = await dResp.json();
-          const name = dJson?.result?.sync_product?.name?.toLowerCase?.() || '';
-          if (name.includes(sectionParam)) filtered.push(p);
+          const nameRaw = dJson?.result?.sync_product?.name || '';
+          const nmLower = nameRaw.toLowerCase();
+          if (nmLower && nmLower.includes(normalizedSection)) {
+            filtered.push(p);
+            matchedNames.push(nameRaw);
+          }
           await new Promise(r => setTimeout(r, 60));
         } catch (_) {}
       }
       allProducts = filtered;
-      console.log(`🔎 Filtered by section '${sectionParam}': ${allProducts.length}`);
+      console.log('✅ Matched product names:', matchedNames);
+      console.log(`🎯 Returning ${allProducts.length} enriched products for section '${sectionParam}'`);
     }
 
     // Return products without further enrichment per simplified spec
