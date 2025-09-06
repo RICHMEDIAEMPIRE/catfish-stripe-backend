@@ -335,7 +335,7 @@ app.get('/auth/printful/login', (req, res) => {
       return res.status(500).json({ error: 'PRINTFUL_CLIENT_ID is not configured' });
     }
 
-    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `${req.protocol}://${req.get('host')}/auth/printful/callback`;
+    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `https://catfish-stripe-backend.onrender.com/auth/printful/callback`;
 
     const authUrl = new URL('https://www.printful.com/oauth/authorize');
     authUrl.searchParams.set('client_id', clientId);
@@ -365,7 +365,7 @@ app.get('/auth/printful/callback', async (req, res) => {
       return res.status(500).json({ error: 'PRINTFUL_CLIENT_ID/PRINTFUL_CLIENT_SECRET not configured' });
     }
 
-    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `${req.protocol}://${req.get('host')}/auth/printful/callback`;
+    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `https://catfish-stripe-backend.onrender.com/auth/printful/callback`;
 
     const body = new URLSearchParams({
       client_id: clientId,
