@@ -324,7 +324,7 @@ app.get("/printful/products", cors(), async (req, res) => {
     const productsResponse = await fetch('https://api.printful.com/store/products', {
       method: 'GET',
       headers: {
-        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Authorization': `Bearer ${printfulApiKey}`,
         'Content-Type': 'application/json',
         'User-Agent': 'Catfish-Empire/1.0'
       }
@@ -349,7 +349,7 @@ app.get("/printful/products", cors(), async (req, res) => {
         const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+            'Authorization': `Bearer ${printfulApiKey}`,
             'Content-Type': 'application/json',
             'User-Agent': 'Catfish-Empire/1.0'
           }
@@ -425,7 +425,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     const authTestResponse = await fetch('https://api.printful.com/oauth/scopes', {
       method: 'GET',
       headers: {
-        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Authorization': `Bearer ${printfulApiKey}`,
         'Content-Type': 'application/json',
         'User-Agent': 'Catfish-Empire/1.0'
       }
@@ -438,7 +438,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       return res.status(401).json({ 
         error: "Printful API authentication failed", 
         status: authTestResponse.status,
-        details: "Check your PRINTFUL_API_KEY environment variable"
+        details: "You need a new OAuth 2.0 Bearer token from https://developers.printful.com/ - Basic authentication is deprecated"
       });
     }
     
@@ -460,7 +460,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     const productsResponse = await fetch('https://api.printful.com/store/products', {
       method: 'GET',
       headers: {
-        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Authorization': `Bearer ${printfulApiKey}`,
         'Content-Type': 'application/json',
         'User-Agent': 'Catfish-Empire/1.0'
       }
@@ -497,7 +497,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+            'Authorization': `Bearer ${printfulApiKey}`,
             'Content-Type': 'application/json',
             'User-Agent': 'Catfish-Empire/1.0'
           }
@@ -596,7 +596,8 @@ app.get("/debug/env", cors(), async (req, res) => {
       printfulApiKey: {
         exists: !!printfulKey,
         length: printfulKey ? printfulKey.length : 0,
-        preview: printfulKey ? `${printfulKey.substring(0, 8)}...` : 'Not set'
+        preview: printfulKey ? `${printfulKey.substring(0, 8)}...` : 'Not set',
+        note: "Must be OAuth 2.0 Bearer token from https://developers.printful.com/"
       },
       adminPassword: {
         exists: !!adminPass,
@@ -604,7 +605,8 @@ app.get("/debug/env", cors(), async (req, res) => {
       },
       allEnvKeys: Object.keys(process.env).filter(key => 
         key.includes('PRINTFUL') || key.includes('ADMIN') || key.includes('SUPABASE')
-      )
+      ),
+      message: "Printful deprecated Basic auth - you need a new OAuth 2.0 token"
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
