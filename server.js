@@ -416,6 +416,33 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       console.error("❌ Printful API key not configured");
       return res.status(500).json({ error: "Printful API key not configured" });
     }
+    
+    // Debug API key (safely)
+    console.log(`🔑 API Key found - Length: ${printfulApiKey.length}, Starts with: ${printfulApiKey.substring(0, 8)}...`);
+    
+    // Test authentication first with a simple API call
+    console.log("🧪 Testing Printful API authentication...");
+    const authTestResponse = await fetch('https://api.printful.com/oauth/scopes', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Basic ${Buffer.from(printfulApiKey + ':').toString('base64')}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish-Empire/1.0'
+      }
+    });
+    
+    console.log(`🔍 Auth test status: ${authTestResponse.status}`);
+    if (!authTestResponse.ok) {
+      const authError = await authTestResponse.text();
+      console.error(`❌ Printful auth test failed: ${authTestResponse.status} - ${authError}`);
+      return res.status(401).json({ 
+        error: "Printful API authentication failed", 
+        status: authTestResponse.status,
+        details: "Check your PRINTFUL_API_KEY environment variable"
+      });
+    }
+    
+    console.log("✅ Printful authentication successful!");
 
     // Cache for enhanced Printful products (15 minute TTL)
     const cacheKey = 'catfish_empire_products';
@@ -556,6 +583,31 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       error: "Failed to fetch Catfish Empire Printful products",
       details: error.message 
     });
+  }
+});
+
+// Debug endpoint to test environment variables (REMOVE IN PRODUCTION)
+app.get("/debug/env", cors(), async (req, res) => {
+  try {
+    const printfulKey = process.env.PRINTFUL_API_KEY;
+    const adminPass = process.env.ADMIN_PASSWORD;
+    
+    res.json({
+      printfulApiKey: {
+        exists: !!printfulKey,
+        length: printfulKey ? printfulKey.length : 0,
+        preview: printfulKey ? `${printfulKey.substring(0, 8)}...` : 'Not set'
+      },
+      adminPassword: {
+        exists: !!adminPass,
+        length: adminPass ? adminPass.length : 0
+      },
+      allEnvKeys: Object.keys(process.env).filter(key => 
+        key.includes('PRINTFUL') || key.includes('ADMIN') || key.includes('SUPABASE')
+      )
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
