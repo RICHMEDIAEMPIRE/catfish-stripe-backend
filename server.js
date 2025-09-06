@@ -300,6 +300,122 @@ app.get("/etsy/section", cors(), async (req, res) => {
 // ====================== PRINTFUL API INTEGRATION ====================
 // =====================================================================
 
+// ====================== PRINTFUL OAUTH (Bearer) =====================
+// In-memory token storage (replace with persistent storage later)
+let printfulAccessToken = null;
+let printfulTokenInfo = {
+  access_token: null,
+  refresh_token: null,
+  expires_at: 0,
+  scope: null
+};
+
+function setPrintfulToken(tokenResponse) {
+  printfulAccessToken = tokenResponse.access_token;
+  printfulTokenInfo = {
+    access_token: tokenResponse.access_token,
+    refresh_token: tokenResponse.refresh_token,
+    expires_at: tokenResponse.expires_in ? Date.now() + (tokenResponse.expires_in * 1000) : 0,
+    scope: tokenResponse.scope || null
+  };
+  console.log("🔐 Stored Printful access token in memory. Expires at:", printfulTokenInfo.expires_at || 'unknown');
+}
+
+function getPrintfulAuthHeader() {
+  // Prefer OAuth token if available, otherwise fall back to env token if set
+  const token = printfulAccessToken || process.env.PRINTFUL_API_KEY || '';
+  return `Bearer ${token}`;
+}
+
+// GET /auth/printful/login → redirect user to Printful OAuth consent
+app.get('/auth/printful/login', (req, res) => {
+  try {
+    const clientId = process.env.PRINTFUL_CLIENT_ID;
+    if (!clientId) {
+      return res.status(500).json({ error: 'PRINTFUL_CLIENT_ID is not configured' });
+    }
+
+    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `${req.protocol}://${req.get('host')}/auth/printful/callback`;
+
+    const authUrl = new URL('https://www.printful.com/oauth/authorize');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    // Optional: scopes managed in Printful app; omit for default
+
+    console.log('➡️ Redirecting to Printful OAuth:', authUrl.toString());
+    res.redirect(authUrl.toString());
+  } catch (error) {
+    console.error('❌ Error building Printful OAuth URL:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /auth/printful/callback → exchange code for access token
+app.get('/auth/printful/callback', async (req, res) => {
+  try {
+    const { code } = req.query;
+    if (!code) {
+      return res.status(400).json({ error: 'Missing code parameter' });
+    }
+
+    const clientId = process.env.PRINTFUL_CLIENT_ID;
+    const clientSecret = process.env.PRINTFUL_CLIENT_SECRET;
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: 'PRINTFUL_CLIENT_ID/PRINTFUL_CLIENT_SECRET not configured' });
+    }
+
+    const redirectUri = process.env.PRINTFUL_REDIRECT_URI || `${req.protocol}://${req.get('host')}/auth/printful/callback`;
+
+    const body = new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code: String(code),
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri
+    }).toString();
+
+    const tokenResp = await fetch('https://api.printful.com/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Catfish Empire Server'
+      },
+      body
+    });
+
+    const tokenJson = await tokenResp.json();
+    if (!tokenResp.ok) {
+      console.error('❌ Printful token exchange failed:', tokenResp.status, tokenJson);
+      return res.status(500).json({ error: 'Token exchange failed', details: tokenJson });
+    }
+
+    setPrintfulToken(tokenJson);
+    res.status(200).json({ success: true, token_received: !!printfulAccessToken, expires_at: printfulTokenInfo.expires_at });
+  } catch (error) {
+    console.error('❌ Callback error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Simple test route to verify bearer token works
+app.get('/test-printful', async (req, res) => {
+  try {
+    const response = await fetch('https://api.printful.com/store/products', {
+      method: 'GET',
+      headers: {
+        Authorization: getPrintfulAuthHeader(),
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+    const json = await response.json();
+    res.status(response.status).json(json);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Global cache for store_id
 let cachedStoreId = null;
 
@@ -358,48 +474,62 @@ const getPrintfulStoreId = async () => {
 
 // Centralized Printful products fetch function with OAuth 2.0 Bearer token
 const fetchPrintfulProducts = async () => {
-  try {
-    console.log("🚀 Starting Printful products fetch...");
-    
-    // Get store ID dynamically
-    const storeId = await getPrintfulStoreId();
-    
-    if (!storeId) {
-      throw new Error('Store ID is missing or invalid');
+  const requestInfo = {
+    url: 'https://api.printful.com/store/products',
+    method: 'GET',
+    headers: {
+      Authorization: 'Bearer ***', // sanitized (actual header built below)
+      'Content-Type': 'application/json',
+      'User-Agent': 'Catfish Empire Server'
     }
+  };
 
-    console.log(`📡 Fetching products from store ID: ${storeId}`);
-    
-    // Now fetch products from the specific store
-    const response = await fetch(`https://api.printful.com/stores/${storeId}/products`, {
-      method: 'GET',
+  try {
+    console.log('🚀 Starting Printful products fetch...');
+    console.log('🌐 Request:', { url: requestInfo.url, method: requestInfo.method, headers: requestInfo.headers });
+
+    // Call the direct store products endpoint (no hardcoded store_id)
+    const response = await fetch(requestInfo.url, {
+      method: requestInfo.method,
       headers: {
-        'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+        Authorization: getPrintfulAuthHeader(),
         'Content-Type': 'application/json',
-        'User-Agent': 'Catfish Empire Server'
+        'User-Agent': requestInfo.headers['User-Agent']
       }
     });
 
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = { raw: text };
+    }
 
     if (!response.ok) {
-      console.error(`❌ Products fetch failed: ${response.status} - ${JSON.stringify(data)}`);
-      throw new Error(`Printful products API error: ${response.status} - ${data?.error?.message || 'Unknown error'}`);
+      console.error('❌ Products fetch failed', {
+        status: response.status,
+        statusText: response.statusText,
+        url: requestInfo.url,
+        method: requestInfo.method,
+        response: data
+      });
+      throw new Error(`Printful products API error: ${response.status} - ${JSON.stringify(data)}`);
     }
 
-    console.log(`✅ Successfully fetched products. Status: ${response.status}, Code: ${data.code}`);
-    console.log("🛒 Raw Printful product data:", JSON.stringify(data, null, 2));
-    
-    // Validate response structure
+    console.log(`✅ Products fetched. Status: ${response.status}`);
+    if (data && typeof data === 'object') {
+      console.log('🛒 Raw Printful product data:', JSON.stringify(data, null, 2));
+    }
+
     if (data.code !== 200) {
-      console.error(`❌ API returned error code: ${data.code} - ${data.error || 'Unknown error'}`);
+      console.error('❌ API returned non-200 code', { code: data.code, error: data.error });
       throw new Error(`Printful API error code: ${data.code} - ${data.error || 'Unknown error'}`);
     }
-    
+
     return data;
   } catch (err) {
     console.error('❌ Printful fetch error:', err.message);
-    console.error('❌ Full error details:', err);
     throw err;
   }
 };
@@ -434,17 +564,14 @@ app.get("/printful/products", cors(), async (req, res) => {
     const products = productsData.result || [];
     const enrichedProducts = [];
 
-    // Get store ID for detailed product fetches
-    const storeId = await getPrintfulStoreId();
-
     // Process up to 12 products to avoid overwhelming the page
     for (const product of products.slice(0, 12)) {
       try {
         // Fetch detailed product information
-        const detailResponse = await fetch(`https://api.printful.com/stores/${storeId}/products/${product.id}`, {
+        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${printfulApiKey}`,
+            'Authorization': getPrintfulAuthHeader(),
             'Content-Type': 'application/json',
             'User-Agent': 'Catfish-Empire/1.0'
           }
@@ -564,19 +691,16 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     // Return all products without filtering - let frontend handle it
     const enrichedProducts = [];
 
-    // Get store ID for detailed product fetches
-    const storeId = await getPrintfulStoreId();
-
     // Process up to 20 products from all products
     for (const product of allProducts.slice(0, 20)) {
       try {
         console.log(`🔄 Processing product: ${product.name} (ID: ${product.id})`);
         
         // Fetch detailed product information
-        const detailResponse = await fetch(`https://api.printful.com/stores/${storeId}/products/${product.id}`, {
+        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${printfulApiKey}`,
+            'Authorization': getPrintfulAuthHeader(),
             'Content-Type': 'application/json',
             'User-Agent': 'Catfish-Empire/1.0'
           }
