@@ -735,7 +735,7 @@ app.get("/printful/products", cors(), async (req, res) => {
 // Enhanced Printful API endpoint for "Catfish Empire" section with detailed product info
 app.get("/api/printful-products", cors(), async (req, res) => {
   try {
-    const sectionParam = String(req.query.section || '').trim();
+    const sectionParam = String(req.query.section || '').trim().toLowerCase();
     console.log("🔍 /api/printful-products called. section=", sectionParam || '(none)');
     
     const printfulApiKey = process.env.PRINTFUL_API_KEY;
@@ -783,27 +783,69 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       return res.json(global.printfulCache[cacheKey].data);
     }
 
-    // Use the centralized fetch function
-    const productsData = await fetchPrintfulProducts();
+    // Direct call to Printful list endpoint as requested
+    let listResp = await fetch('https://api.printful.com/store/products', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${printfulApiKey}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish-Empire/1.0'
+      }
+    });
+    let text = await listResp.text();
+    let productsData; try { productsData = JSON.parse(text); } catch { productsData = { raw: text }; }
+    console.log("Printful response:", JSON.stringify(productsData, null, 2));
 
-    if (productsData.code !== 200) {
-      throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
+    // Retry with store_id if required
+    if (listResp.status === 400 && /store_id/i.test(JSON.stringify(productsData))) {
+      const storeId = await getPrintfulStoreId();
+      const url = `https://api.printful.com/store/products?store_id=${encodeURIComponent(storeId)}`;
+      console.log('🔁 Retrying list with store_id:', url);
+      listResp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${printfulApiKey}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Catfish-Empire/1.0'
+        }
+      });
+      text = await listResp.text();
+      try { productsData = JSON.parse(text); } catch { productsData = { raw: text }; }
+      console.log("Printful response (with store_id):", JSON.stringify(productsData, null, 2));
     }
 
-    let allProducts = productsData.result || [];
+    if (!listResp.ok) {
+      return res.status(listResp.status).json({ error: 'Printful list error', details: productsData });
+    }
+
+    let allProducts = Array.isArray(productsData.result) ? productsData.result : [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
 
     // If a section is provided, attempt a simple name-based filter.
     // Note: Printful product templates don't include a native "section" field;
     // this filter matches product names/descriptions to the provided section token.
     if (sectionParam) {
-      const token = sectionParam.toLowerCase();
-      const before = allProducts.length;
-      allProducts = allProducts.filter(p => {
-        const name = (p.name || '').toLowerCase();
-        return name.includes(token) || name.includes('catfish') || name.includes('empire');
-      });
-      console.log(`🔎 Filtered by section token '${token}': ${before} -> ${allProducts.length}`);
+      // For accurate filtering, fetch details and check sync_product.name
+      const filtered = [];
+      for (const p of allProducts) {
+        try {
+          const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': `Bearer ${printfulApiKey}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'Catfish-Empire/1.0'
+            }
+          });
+          if (!dResp.ok) continue;
+          const dJson = await dResp.json();
+          const name = dJson?.result?.sync_product?.name?.toLowerCase?.() || '';
+          if (name.includes(sectionParam)) filtered.push(p);
+          await new Promise(r => setTimeout(r, 60));
+        } catch (_) {}
+      }
+      allProducts = filtered;
+      console.log(`🔎 Filtered by section '${sectionParam}': ${allProducts.length}`);
     }
 
     // Return (optionally filtered) products and enrich
