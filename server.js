@@ -297,6 +297,265 @@ app.get("/etsy/section", cors(), async (req, res) => {
 });
 
 // =====================================================================
+// ====================== PRINTFUL API INTEGRATION ====================
+// =====================================================================
+
+// Printful API endpoint to fetch synced products
+app.get("/printful/products", cors(), async (req, res) => {
+  try {
+    const printfulApiKey = process.env.PRINTFUL_API_KEY;
+    if (!printfulApiKey) {
+      return res.status(500).json({ error: "Printful API key not configured" });
+    }
+
+    // Cache for Printful products (15 minute TTL)
+    const cacheKey = 'printful_products';
+    const now = Date.now();
+    
+    // Simple in-memory cache (could be Redis in production)
+    if (!global.printfulCache) global.printfulCache = {};
+    
+    if (global.printfulCache[cacheKey] && 
+        (now - global.printfulCache[cacheKey].timestamp) < (15 * 60 * 1000)) {
+      return res.json(global.printfulCache[cacheKey].data);
+    }
+
+    // Fetch products from Printful
+    const productsResponse = await fetch('https://api.printful.com/store/products', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${printfulApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!productsResponse.ok) {
+      throw new Error(`Printful API error: ${productsResponse.status}`);
+    }
+
+    const productsData = await productsResponse.json();
+    if (productsData.code !== 200) {
+      throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
+    }
+
+    const products = productsData.result || [];
+    const enrichedProducts = [];
+
+    // Process up to 12 products to avoid overwhelming the page
+    for (const product of products.slice(0, 12)) {
+      try {
+        // Fetch detailed product information
+        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${printfulApiKey}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (detailResponse.ok) {
+          const detailData = await detailResponse.json();
+          if (detailData.code === 200 && detailData.result) {
+            const productDetail = detailData.result;
+            const variant = productDetail.sync_variants && productDetail.sync_variants[0];
+
+            if (variant && variant.retail_price) {
+              enrichedProducts.push({
+                id: product.id,
+                name: productDetail.sync_product?.name || product.name || 'Catfish Empire Product',
+                description: productDetail.sync_product?.description || 'Premium Catfish Empire merchandise',
+                price: parseFloat(variant.retail_price),
+                currency: variant.currency || 'USD',
+                image: variant.files?.[0]?.preview_url || variant.files?.[0]?.thumbnail_url || '',
+                variant_id: variant.id,
+                availability: variant.availability_status || 'active',
+                type: 'printful'
+              });
+            }
+          }
+        }
+
+        // Rate limiting - small delay between requests
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        console.warn(`Failed to fetch details for product ${product.id}:`, error);
+      }
+    }
+
+    const responseData = {
+      products: enrichedProducts,
+      count: enrichedProducts.length,
+      timestamp: now
+    };
+
+    // Cache the results
+    global.printfulCache[cacheKey] = {
+      data: responseData,
+      timestamp: now
+    };
+
+    res.json(responseData);
+  } catch (error) {
+    console.error('Printful products fetch error:', error);
+    res.status(500).json({ 
+      error: "Failed to fetch Printful products",
+      details: error.message 
+    });
+  }
+});
+
+// Enhanced Printful API endpoint for "Catfish Empire" section with detailed product info
+app.get("/api/printful-products", cors(), async (req, res) => {
+  try {
+    console.log("🔍 Fetching Printful products from Catfish Empire section...");
+    
+    const printfulApiKey = process.env.PRINTFUL_API_KEY;
+    if (!printfulApiKey) {
+      console.error("❌ Printful API key not configured");
+      return res.status(500).json({ error: "Printful API key not configured" });
+    }
+
+    // Cache for enhanced Printful products (15 minute TTL)
+    const cacheKey = 'catfish_empire_products';
+    const now = Date.now();
+    
+    if (!global.printfulCache) global.printfulCache = {};
+    
+    if (global.printfulCache[cacheKey] && 
+        (now - global.printfulCache[cacheKey].timestamp) < (15 * 60 * 1000)) {
+      console.log("✅ Using cached Catfish Empire products");
+      return res.json(global.printfulCache[cacheKey].data);
+    }
+
+    // Fetch all store products
+    const productsResponse = await fetch('https://api.printful.com/store/products', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${printfulApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!productsResponse.ok) {
+      throw new Error(`Printful API error: ${productsResponse.status}`);
+    }
+
+    const productsData = await productsResponse.json();
+    if (productsData.code !== 200) {
+      throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
+    }
+
+    const allProducts = productsData.result || [];
+    console.log(`📦 Found ${allProducts.length} total Printful products`);
+    
+    // Filter for "Catfish Empire" products (assuming this is in the product name or category)
+    const catfishProducts = allProducts.filter(product => 
+      (product.name && product.name.toLowerCase().includes('catfish empire')) ||
+      (product.name && product.name.toLowerCase().includes('catfish'))
+    );
+
+    console.log(`🎣 Found ${catfishProducts.length} Catfish Empire products`);
+    
+    const enrichedProducts = [];
+
+    // Process up to 20 products from the Catfish Empire section
+    for (const product of catfishProducts.slice(0, 20)) {
+      try {
+        console.log(`🔄 Processing product: ${product.name} (ID: ${product.id})`);
+        
+        // Fetch detailed product information
+        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${printfulApiKey}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (detailResponse.ok) {
+          const detailData = await detailResponse.json();
+          if (detailData.code === 200 && detailData.result) {
+            const productDetail = detailData.result;
+            const variant = productDetail.sync_variants && productDetail.sync_variants[0];
+
+            if (variant && variant.retail_price && parseFloat(variant.retail_price) > 0) {
+              // Collect all mockup images from all variants
+              const allMockupImages = [];
+              
+              productDetail.sync_variants?.forEach(v => {
+                v.files?.forEach(file => {
+                  if (file.type === 'preview' && file.preview_url) {
+                    allMockupImages.push({
+                      url: file.preview_url,
+                      thumbnail: file.thumbnail_url || file.preview_url,
+                      title: `${productDetail.sync_product?.name} - ${v.name || 'Variant'}`
+                    });
+                  }
+                });
+              });
+
+              // Remove duplicates based on URL
+              const uniqueImages = allMockupImages.filter((img, index, self) =>
+                index === self.findIndex(i => i.url === img.url)
+              );
+
+              const enrichedProduct = {
+                id: product.id,
+                productId: product.id,
+                name: productDetail.sync_product?.name || product.name || 'Catfish Empire Product',
+                description: productDetail.sync_product?.description || 'Premium Catfish Empire merchandise',
+                price: parseFloat(variant.retail_price),
+                currency: variant.currency || 'USD',
+                variantId: variant.id,
+                variant_id: variant.id, // Keep both for compatibility
+                availability: variant.availability_status || 'active',
+                type: 'printful',
+                images: uniqueImages,
+                thumbnail: uniqueImages[0]?.thumbnail || uniqueImages[0]?.url || '',
+                mainImage: uniqueImages[0]?.url || '',
+                freeShipping: true, // All Printful items have free shipping as requested
+                section: 'Catfish Empire'
+              };
+
+              console.log(`✅ Enriched product: ${enrichedProduct.name} with ${enrichedProduct.images.length} images`);
+              enrichedProducts.push(enrichedProduct);
+            }
+          }
+        }
+
+        // Rate limiting - small delay between requests
+        await new Promise(resolve => setTimeout(resolve, 150));
+      } catch (error) {
+        console.warn(`⚠️ Failed to fetch details for product ${product.id}:`, error.message);
+      }
+    }
+
+    const responseData = {
+      products: enrichedProducts,
+      count: enrichedProducts.length,
+      timestamp: now,
+      section: 'Catfish Empire'
+    };
+
+    console.log(`🎯 Returning ${enrichedProducts.length} enriched Catfish Empire products`);
+
+    // Cache the results
+    global.printfulCache[cacheKey] = {
+      data: responseData,
+      timestamp: now
+    };
+
+    res.json(responseData);
+  } catch (error) {
+    console.error('❌ Catfish Empire Printful fetch error:', error);
+    res.status(500).json({ 
+      error: "Failed to fetch Catfish Empire Printful products",
+      details: error.message 
+    });
+  }
+});
+
+// =====================================================================
 // ========================= EXISTING ENDPOINTS =========================
 // =====================================================================
 
@@ -350,18 +609,40 @@ app.post("/create-checkout-session", async (req, res) => {
     return res.status(400).json({ error: "Invalid cart format" });
 
   try {
+    // Create line items with dynamic pricing based on product type
+    const line_items = items.map((item) => {
+      if (item.type === 'printful') {
+        // Printful product - use dynamic pricing
+        const priceInCents = Math.round((item.price || 0) * 100);
+        return {
+          price_data: {
+            currency: item.currency?.toLowerCase() || "usd",
+            product_data: { 
+              name: item.name || 'Catfish Empire Product',
+              images: item.image ? [item.image] : []
+            },
+            unit_amount: priceInCents,
+          },
+          quantity: item.qty || 1,
+        };
+      } else {
+        // Sunglasses product - use existing hardcoded pricing
+        return {
+          price_data: {
+            currency: "usd",
+            product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
+            unit_amount: 1499,
+          },
+          quantity: item.qty,
+        };
+      }
+    });
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
       customer_creation: "always",
-      line_items: items.map((item) => ({
-        price_data: {
-          currency: "usd",
-          product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 1499,
-        },
-        quantity: item.qty,
-      })),
+      line_items,
       metadata: {
         items: JSON.stringify(items),
         shippingState: shippingState || "Unknown",
@@ -419,10 +700,14 @@ app.post("/webhook", async (req, res) => {
 
     let updated = [];
     for (const item of items) {
-      if (inventory[item.color] !== undefined) {
+      if (item.type === 'printful') {
+        // Printful products - just log for notification
+        updated.push(`${item.qty} × ${item.name} (Printful) - $${item.price}`);
+      } else if (inventory[item.color] !== undefined) {
+        // Sunglasses products - update inventory
         inventory[item.color] -= item.qty;
         await updateQuantity(item.color, inventory[item.color]);
-        updated.push(`${item.qty} × ${item.color}`);
+        updated.push(`${item.qty} × ${item.color} Sunglasses - $14.99`);
       }
     }
 
@@ -437,8 +722,13 @@ ${shipping.city || ""}, ${shipping.state || ""} ${shipping.postal_code || ""}
 ${shipping.country || "USA"}
 🗺️ Shipping State (client-supplied): ${shippingState}
 
-🕶️ Items:
+🛍️ Items:
 ${updated.join("\n")}
+
+💰 Total: $${items.reduce((sum, item) => {
+  const price = item.type === 'printful' ? item.price : 14.99;
+  return sum + (price * item.qty);
+}, 0).toFixed(2)} + $5.99 shipping + tax
 `;
 
     transporter.sendMail(
