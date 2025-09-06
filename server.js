@@ -300,6 +300,32 @@ app.get("/etsy/section", cors(), async (req, res) => {
 // ====================== PRINTFUL API INTEGRATION ====================
 // =====================================================================
 
+// Centralized Printful products fetch function with OAuth 2.0 Bearer token
+const fetchPrintfulProducts = async () => {
+  try {
+    const response = await fetch('https://api.printful.com/store/products', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(`Printful API error: ${response.status} - ${JSON.stringify(data)}`);
+    }
+
+    console.log("🛒 Raw Printful product data:", JSON.stringify(data, null, 2));
+    return data;
+  } catch (err) {
+    console.error('❌ Printful fetch error:', err.message);
+    throw err;
+  }
+};
+
 // Printful API endpoint to fetch synced products
 app.get("/printful/products", cors(), async (req, res) => {
   try {
@@ -320,21 +346,9 @@ app.get("/printful/products", cors(), async (req, res) => {
       return res.json(global.printfulCache[cacheKey].data);
     }
 
-    // Fetch products from Printful
-    const productsResponse = await fetch('https://api.printful.com/store/products', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Catfish-Empire/1.0'
-      }
-    });
-
-    if (!productsResponse.ok) {
-      throw new Error(`Printful API error: ${productsResponse.status}`);
-    }
-
-    const productsData = await productsResponse.json();
+    // Use the centralized fetch function
+    const productsData = await fetchPrintfulProducts();
+    
     if (productsData.code !== 200) {
       throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
     }
@@ -445,32 +459,20 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     console.log("✅ Printful authentication successful!");
 
     // Cache for enhanced Printful products (15 minute TTL)
-    const cacheKey = 'catfish_empire_products';
+    const cacheKey = 'all_printful_products';
     const now = Date.now();
     
     if (!global.printfulCache) global.printfulCache = {};
     
     if (global.printfulCache[cacheKey] && 
         (now - global.printfulCache[cacheKey].timestamp) < (15 * 60 * 1000)) {
-      console.log("✅ Using cached Catfish Empire products");
+      console.log("✅ Using cached Printful products");
       return res.json(global.printfulCache[cacheKey].data);
     }
 
-    // Fetch all store products
-    const productsResponse = await fetch('https://api.printful.com/store/products', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Catfish-Empire/1.0'
-      }
-    });
+    // Use the centralized fetch function
+    const productsData = await fetchPrintfulProducts();
 
-    if (!productsResponse.ok) {
-      throw new Error(`Printful API error: ${productsResponse.status}`);
-    }
-
-    const productsData = await productsResponse.json();
     if (productsData.code !== 200) {
       throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
     }
@@ -478,18 +480,11 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     const allProducts = productsData.result || [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
     
-    // Filter for "Catfish Empire" products (assuming this is in the product name or category)
-    const catfishProducts = allProducts.filter(product => 
-      (product.name && product.name.toLowerCase().includes('catfish empire')) ||
-      (product.name && product.name.toLowerCase().includes('catfish'))
-    );
-
-    console.log(`🎣 Found ${catfishProducts.length} Catfish Empire products`);
-    
+    // Return all products without filtering - let frontend handle it
     const enrichedProducts = [];
 
-    // Process up to 20 products from the Catfish Empire section
-    for (const product of catfishProducts.slice(0, 20)) {
+    // Process up to 20 products from all products
+    for (const product of allProducts.slice(0, 20)) {
       try {
         console.log(`🔄 Processing product: ${product.name} (ID: ${product.id})`);
         
@@ -545,7 +540,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
                 thumbnail: uniqueImages[0]?.thumbnail || uniqueImages[0]?.url || '',
                 mainImage: uniqueImages[0]?.url || '',
                 freeShipping: true, // All Printful items have free shipping as requested
-                section: 'Catfish Empire'
+                section: 'All Products'
               };
 
               console.log(`✅ Enriched product: ${enrichedProduct.name} with ${enrichedProduct.images.length} images`);
@@ -565,10 +560,10 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       products: enrichedProducts,
       count: enrichedProducts.length,
       timestamp: now,
-      section: 'Catfish Empire'
+      section: 'All Products'
     };
 
-    console.log(`🎯 Returning ${enrichedProducts.length} enriched Catfish Empire products`);
+    console.log(`🎯 Returning ${enrichedProducts.length} enriched products`);
 
     // Cache the results
     global.printfulCache[cacheKey] = {
