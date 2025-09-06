@@ -848,90 +848,19 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       console.log(`🔎 Filtered by section '${sectionParam}': ${allProducts.length}`);
     }
 
-    // Return (optionally filtered) products and enrich
-    const enrichedProducts = [];
-
-    // Process up to 20 products from all products
-    for (const product of allProducts.slice(0, 20)) {
-      try {
-        console.log(`🔄 Processing product: ${product.name} (ID: ${product.id})`);
-        
-        // Fetch detailed product information
-        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': getPrintfulAuthHeader(),
-            'Content-Type': 'application/json',
-            'User-Agent': 'Catfish-Empire/1.0'
-          }
-        });
-
-        if (detailResponse.ok) {
-          const detailData = await detailResponse.json();
-          if (detailData.code === 200 && detailData.result) {
-            const productDetail = detailData.result;
-            const variant = productDetail.sync_variants && productDetail.sync_variants[0];
-
-            if (variant && variant.retail_price && parseFloat(variant.retail_price) > 0) {
-              // Collect all mockup images from all variants
-              const allMockupImages = [];
-              
-              productDetail.sync_variants?.forEach(v => {
-                v.files?.forEach(file => {
-                  if (file.type === 'preview' && file.preview_url) {
-                    allMockupImages.push({
-                      url: file.preview_url,
-                      thumbnail: file.thumbnail_url || file.preview_url,
-                      title: `${productDetail.sync_product?.name} - ${v.name || 'Variant'}`
-                    });
-                  }
-                });
-              });
-
-              // Remove duplicates based on URL
-              const uniqueImages = allMockupImages.filter((img, index, self) =>
-                index === self.findIndex(i => i.url === img.url)
-              );
-
-              const enrichedProduct = {
-                id: product.id,
-                productId: product.id,
-                name: productDetail.sync_product?.name || product.name || 'Catfish Empire Product',
-                description: productDetail.sync_product?.description || 'Premium Catfish Empire merchandise',
-                price: parseFloat(variant.retail_price),
-                currency: variant.currency || 'USD',
-                variantId: variant.id,
-                variant_id: variant.id, // Keep both for compatibility
-                availability: variant.availability_status || 'active',
-                type: 'printful',
-                images: uniqueImages,
-                thumbnail: uniqueImages[0]?.thumbnail || uniqueImages[0]?.url || '',
-                mainImage: uniqueImages[0]?.url || '',
-                freeShipping: true, // All Printful items have free shipping as requested
-                section: 'All Products'
-              };
-
-              console.log(`✅ Enriched product: ${enrichedProduct.name} with ${enrichedProduct.images.length} images`);
-              enrichedProducts.push(enrichedProduct);
-            }
-          }
-        }
-
-        // Rate limiting - small delay between requests
-        await new Promise(resolve => setTimeout(resolve, 150));
-      } catch (error) {
-        console.warn(`⚠️ Failed to fetch details for product ${product.id}:`, error.message);
-      }
-    }
+    // Return products without further enrichment per simplified spec
+    // Optionally also log matched product names
+    const namesSample = allProducts.slice(0, 10).map(p => p.name || p.id);
+    console.log('🧾 Names sample:', namesSample);
 
     const responseData = {
-      products: enrichedProducts,
-      count: enrichedProducts.length,
+      products: allProducts,
+      count: allProducts.length,
       timestamp: now,
-      section: sectionParam || 'All Products'
+      section: sectionParam || ''
     };
 
-    console.log(`🎯 Returning ${enrichedProducts.length} enriched products for section '${responseData.section}'`);
+    console.log(`🎯 Returning ${responseData.count} products for section '${responseData.section || '(all)'}'`);
 
     // Cache the results
     global.printfulCache[cacheKey] = {
