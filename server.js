@@ -425,44 +425,52 @@ const clearStoreIdCache = () => {
   cachedStoreId = null;
 };
 
-// Get Printful store ID (cached)
+// Get Printful store ID (cached) - tries /stores first, then /store?store_id if needed
 const getPrintfulStoreId = async () => {
   if (cachedStoreId) {
     console.log(`🎯 Using cached store ID: ${cachedStoreId}`);
     return cachedStoreId;
   }
 
-  console.log("🔍 Fetching store information from /store endpoint...");
+  console.log("🔍 Fetching store information (trying /stores)...");
   
   try {
-    const storeResponse = await fetch('https://api.printful.com/store', {
+    // First try the multi-store listing endpoint
+    const listResp = await fetch('https://api.printful.com/stores', {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+        'Authorization': getPrintfulAuthHeader(),
         'Content-Type': 'application/json',
         'User-Agent': 'Catfish Empire Server'
       }
     });
-
-    const storeData = await storeResponse.json();
-    
-    if (!storeResponse.ok) {
-      console.error(`❌ Printful store API error: ${storeResponse.status} - ${JSON.stringify(storeData)}`);
-      throw new Error(`Failed to fetch store information: ${storeResponse.status} - ${storeData?.error?.message || 'Unknown error'}`);
+    const listJson = await listResp.json().catch(() => ({}));
+    if (listResp.ok && Array.isArray(listJson.result) && listJson.result.length > 0) {
+      cachedStoreId = listJson.result[0].id;
+      console.log(`✅ Cached store ID from /stores: ${cachedStoreId}`);
+      return cachedStoreId;
     }
 
-    console.log("🏪 Store data fetched successfully:", JSON.stringify(storeData, null, 2));
-    
-    // Check if store data has the expected structure
-    if (!storeData.result || !storeData.result.id) {
-      console.error("❌ Invalid store data structure:", storeData);
-      throw new Error('Store ID not found in API response. Expected result.id field.');
+    // If /stores is not available or empty, try /store?store_id fallback if env provides one
+    console.warn('⚠️ /stores did not return a usable store. If your token requires explicit store_id, set PRINTFUL_STORE_ID in env.');
+    if (process.env.PRINTFUL_STORE_ID) {
+      cachedStoreId = process.env.PRINTFUL_STORE_ID;
+      console.log(`✅ Using PRINTFUL_STORE_ID from env: ${cachedStoreId}`);
+      return cachedStoreId;
     }
-    
-    cachedStoreId = storeData.result.id;
-    console.log(`✅ Successfully cached store ID: ${cachedStoreId}`);
-    
-    return cachedStoreId;
+
+    // Last resort: call /store without id to get precise error for logs
+    const storeResponse = await fetch('https://api.printful.com/store', {
+      method: 'GET',
+      headers: {
+        'Authorization': getPrintfulAuthHeader(),
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+    const storeData = await storeResponse.json().catch(() => ({}));
+    console.error(`❌ Printful /store response (no id): ${storeResponse.status} - ${JSON.stringify(storeData)}`);
+    throw new Error('No store_id available. Set PRINTFUL_STORE_ID or use a token scoped to a default store.');
     
   } catch (error) {
     console.error("❌ Error fetching store ID:", error.message);
@@ -488,8 +496,8 @@ const fetchPrintfulProducts = async () => {
     console.log('🚀 Starting Printful products fetch...');
     console.log('🌐 Request:', { url: requestInfo.url, method: requestInfo.method, headers: requestInfo.headers });
 
-    // Call the direct store products endpoint (no hardcoded store_id)
-    const response = await fetch(requestInfo.url, {
+    // First attempt without store_id (works for tokens bound to a default store)
+    let response = await fetch(requestInfo.url, {
       method: requestInfo.method,
       headers: {
         Authorization: getPrintfulAuthHeader(),
@@ -497,13 +505,24 @@ const fetchPrintfulProducts = async () => {
         'User-Agent': requestInfo.headers['User-Agent']
       }
     });
+    let text = await response.text();
+    let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
-    const text = await response.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch (_) {
-      data = { raw: text };
+    // If API requires store_id, fetch it and retry with ?store_id=
+    if (response.status === 400 && typeof data === 'object' && /store_id/i.test(JSON.stringify(data))) {
+      const storeId = await getPrintfulStoreId();
+      const urlWithId = `${requestInfo.url}?store_id=${encodeURIComponent(storeId)}`;
+      console.log('🔁 Retrying products fetch with store_id:', urlWithId);
+      response = await fetch(urlWithId, {
+        method: requestInfo.method,
+        headers: {
+          Authorization: getPrintfulAuthHeader(),
+          'Content-Type': 'application/json',
+          'User-Agent': requestInfo.headers['User-Agent']
+        }
+      });
+      text = await response.text();
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
     }
 
     if (!response.ok) {
