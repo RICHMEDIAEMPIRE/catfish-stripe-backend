@@ -416,6 +416,91 @@ app.get('/test-printful', async (req, res) => {
   }
 });
 
+// ====================== PUBLIC PRODUCTS ROUTE ========================
+// GET /products/printful/:section → returns enriched products
+app.get('/products/printful/:section', cors(), async (req, res) => {
+  try {
+    const section = String(req.params.section || '').toLowerCase();
+    console.log('🛍️  Products request for section:', section);
+
+    const productsData = await fetchPrintfulProducts();
+    if (productsData.code !== 200) {
+      return res.status(500).json({ error: productsData.error || 'Failed to fetch products' });
+    }
+
+    const allProducts = productsData.result || [];
+    console.log(`📦 Fetched ${allProducts.length} raw products from Printful`);
+
+    // Enrich products with details and images
+    const enrichedProducts = [];
+    for (const product of allProducts.slice(0, 20)) {
+      try {
+        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': getPrintfulAuthHeader(),
+            'Content-Type': 'application/json',
+            'User-Agent': 'Catfish-Empire/1.0'
+          }
+        });
+
+        if (detailResponse.ok) {
+          const detailData = await detailResponse.json();
+          if (detailData.code === 200 && detailData.result) {
+            const productDetail = detailData.result;
+            const variant = productDetail.sync_variants && productDetail.sync_variants[0];
+
+            if (variant && variant.retail_price && parseFloat(variant.retail_price) > 0) {
+              const allMockupImages = [];
+              productDetail.sync_variants?.forEach(v => {
+                v.files?.forEach(file => {
+                  if (file.type === 'preview' && file.preview_url) {
+                    allMockupImages.push({
+                      url: file.preview_url,
+                      thumbnail: file.thumbnail_url || file.preview_url,
+                      title: `${productDetail.sync_product?.name} - ${v.name || 'Variant'}`
+                    });
+                  }
+                });
+              });
+
+              const uniqueImages = allMockupImages.filter((img, index, self) => index === self.findIndex(i => i.url === img.url));
+
+              enrichedProducts.push({
+                id: product.id,
+                productId: product.id,
+                name: productDetail.sync_product?.name || product.name || 'Catfish Empire Product',
+                description: productDetail.sync_product?.description || 'Premium Catfish Empire merchandise',
+                price: parseFloat(variant.retail_price),
+                currency: variant.currency || 'USD',
+                variantId: variant.id,
+                variant_id: variant.id,
+                availability: variant.availability_status || 'active',
+                type: 'printful',
+                images: uniqueImages,
+                thumbnail: uniqueImages[0]?.thumbnail || uniqueImages[0]?.url || '',
+                mainImage: uniqueImages[0]?.url || '',
+                freeShipping: true,
+                section
+              });
+            }
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 120));
+      } catch (e) {
+        console.warn(`⚠️ Enrich failed for product ${product.id}:`, e.message);
+      }
+    }
+
+    console.log(`🎯 Returning ${enrichedProducts.length} enriched products for section '${section}'`);
+    return res.json({ products: enrichedProducts, count: enrichedProducts.length, section });
+  } catch (error) {
+    console.error('❌ /products/printful/:section error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Global cache for store_id
 let cachedStoreId = null;
 
@@ -650,7 +735,8 @@ app.get("/printful/products", cors(), async (req, res) => {
 // Enhanced Printful API endpoint for "Catfish Empire" section with detailed product info
 app.get("/api/printful-products", cors(), async (req, res) => {
   try {
-    console.log("🔍 Fetching Printful products from Catfish Empire section...");
+    const sectionParam = String(req.query.section || '').trim();
+    console.log("🔍 /api/printful-products called. section=", sectionParam || '(none)');
     
     const printfulApiKey = process.env.PRINTFUL_API_KEY;
     if (!printfulApiKey) {
@@ -704,10 +790,23 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       throw new Error(`Printful API error: ${productsData.error || 'Unknown error'}`);
     }
 
-    const allProducts = productsData.result || [];
+    let allProducts = productsData.result || [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
-    
-    // Return all products without filtering - let frontend handle it
+
+    // If a section is provided, attempt a simple name-based filter.
+    // Note: Printful product templates don't include a native "section" field;
+    // this filter matches product names/descriptions to the provided section token.
+    if (sectionParam) {
+      const token = sectionParam.toLowerCase();
+      const before = allProducts.length;
+      allProducts = allProducts.filter(p => {
+        const name = (p.name || '').toLowerCase();
+        return name.includes(token) || name.includes('catfish') || name.includes('empire');
+      });
+      console.log(`🔎 Filtered by section token '${token}': ${before} -> ${allProducts.length}`);
+    }
+
+    // Return (optionally filtered) products and enrich
     const enrichedProducts = [];
 
     // Process up to 20 products from all products
@@ -787,10 +886,10 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       products: enrichedProducts,
       count: enrichedProducts.length,
       timestamp: now,
-      section: 'All Products'
+      section: sectionParam || 'All Products'
     };
 
-    console.log(`🎯 Returning ${enrichedProducts.length} enriched products`);
+    console.log(`🎯 Returning ${enrichedProducts.length} enriched products for section '${responseData.section}'`);
 
     // Cache the results
     global.printfulCache[cacheKey] = {
