@@ -300,10 +300,53 @@ app.get("/etsy/section", cors(), async (req, res) => {
 // ====================== PRINTFUL API INTEGRATION ====================
 // =====================================================================
 
+// Global cache for store_id
+let cachedStoreId = null;
+
+// Get Printful store ID (cached)
+const getPrintfulStoreId = async () => {
+  if (cachedStoreId) {
+    console.log(`🎯 Using cached store ID: ${cachedStoreId}`);
+    return cachedStoreId;
+  }
+
+  console.log("🔍 Fetching store information...");
+  
+  const storeResponse = await fetch('https://api.printful.com/stores', {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'Catfish Empire Server'
+    }
+  });
+
+  const storeData = await storeResponse.json();
+  
+  if (!storeResponse.ok) {
+    throw new Error(`Printful stores API error: ${storeResponse.status} - ${JSON.stringify(storeData)}`);
+  }
+
+  console.log("🏪 Store data:", JSON.stringify(storeData, null, 2));
+  
+  const stores = storeData.result || [];
+  if (stores.length === 0) {
+    throw new Error('No stores found in Printful account');
+  }
+  
+  cachedStoreId = stores[0].id;
+  console.log(`🎯 Cached store ID: ${cachedStoreId}`);
+  
+  return cachedStoreId;
+};
+
 // Centralized Printful products fetch function with OAuth 2.0 Bearer token
 const fetchPrintfulProducts = async () => {
   try {
-    const response = await fetch('https://api.printful.com/store/products', {
+    const storeId = await getPrintfulStoreId();
+
+    // Now fetch products from the specific store
+    const response = await fetch(`https://api.printful.com/stores/${storeId}/products`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
@@ -356,11 +399,14 @@ app.get("/printful/products", cors(), async (req, res) => {
     const products = productsData.result || [];
     const enrichedProducts = [];
 
+    // Get store ID for detailed product fetches
+    const storeId = await getPrintfulStoreId();
+
     // Process up to 12 products to avoid overwhelming the page
     for (const product of products.slice(0, 12)) {
       try {
         // Fetch detailed product information
-        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
+        const detailResponse = await fetch(`https://api.printful.com/stores/${storeId}/products/${product.id}`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${printfulApiKey}`,
@@ -483,13 +529,16 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     // Return all products without filtering - let frontend handle it
     const enrichedProducts = [];
 
+    // Get store ID for detailed product fetches
+    const storeId = await getPrintfulStoreId();
+
     // Process up to 20 products from all products
     for (const product of allProducts.slice(0, 20)) {
       try {
         console.log(`🔄 Processing product: ${product.name} (ID: ${product.id})`);
         
         // Fetch detailed product information
-        const detailResponse = await fetch(`https://api.printful.com/store/products/${product.id}`, {
+        const detailResponse = await fetch(`https://api.printful.com/stores/${storeId}/products/${product.id}`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${printfulApiKey}`,
