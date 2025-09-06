@@ -60,23 +60,7 @@ const transporter = nodemailer.createTransport({
 });
 
 // ===== SESSION & CORS =====
-const allowedOrigins = [
-  "https://www.catfishempire.com",
-  "https://test1243.netlify.app"
-];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS: " + origin));
-    }
-  },
-  methods: ["GET", "POST"],
-  credentials: true
-}));
-
+app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "changeme",
