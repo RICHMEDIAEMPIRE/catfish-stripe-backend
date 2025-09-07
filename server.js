@@ -826,11 +826,12 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     for (const p of allProducts) {
       let name = p.name || '';
       let image = p.thumbnail_url || '';
-      let price = null; // will be string when available
+      let price = null; // string or number
       const external_id = p.external_id || null;
 
       try {
-        const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
+        const detailId = external_id || p.id;
+        const dResp = await fetch(`https://api.printful.com/store/products/${detailId}`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${printfulApiKey}`,
@@ -847,36 +848,19 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           if (firstVar) {
             if (firstVar.retail_price) price = String(firstVar.retail_price);
             else if (firstVar.price) price = String(firstVar.price);
-
-            // If price still missing, fetch catalog product by product_id
-            const catalogProductId = firstVar?.product?.product_id || firstVar?.product_id || null;
-            if (!price && catalogProductId) {
-              try {
-                const catResp = await fetch(`https://api.printful.com/products/${catalogProductId}`, {
-                  method: 'GET',
-                  headers: {
-                    'Authorization': `Bearer ${printfulApiKey}`,
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Catfish-Empire/1.0'
-                  }
-                });
-                if (catResp.ok) {
-                  const catJson = await catResp.json();
-                  const catVar = catJson?.result?.variants?.[0];
-                  if (catVar?.retail_price) price = String(catVar.retail_price);
-                  else if (catVar?.price) price = String(catVar.price);
-                }
-              } catch (e2) {
-                console.warn(`⚠️ Catalog fetch failed for product ${p.id} (catalog ${catalogProductId}):`, e2.message);
-              }
+            const vFile = firstVar.files?.[0];
+            if (!image && (vFile?.preview_url || vFile?.thumbnail_url)) {
+              image = vFile.preview_url || vFile.thumbnail_url;
             }
           }
         }
         await new Promise(r => setTimeout(r, 50));
       } catch (e) {
-        console.warn(`⚠️ Detail fetch failed for product ${p.id}:`, e.message);
+        console.warn(`⚠️ Detail fetch failed for product ${p.id} (external_id ${external_id || 'n/a'}):`, e.message);
       }
 
+      // Skip products without a price to avoid frontend errors
+      if (price == null || price === '') continue;
       enriched.push({ id: p.id, name, image, price, external_id });
     }
 
