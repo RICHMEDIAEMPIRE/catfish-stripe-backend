@@ -825,9 +825,14 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     // Note: Printful product templates don't include a native "section" field;
     // this filter matches product names/descriptions to the provided section token.
     if (sectionParam) {
+      const normalizedSection = sectionParam
+        .replace(/[-–—]/g, ' ')
+        .replace(/[™®©]/g, '')
+        .replace(/[^a-z0-9 ]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
       // For accurate filtering, fetch details and check sync_product.name
       const filtered = [];
-      const normalizedSection = sectionParam.replace(/-/g, ' ').trim();
       const matchedNames = [];
       for (const p of allProducts) {
         try {
@@ -843,9 +848,15 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           const dJson = await dResp.json();
           const nameRaw = dJson?.result?.sync_product?.name || '';
           const nmLower = nameRaw.toLowerCase();
-          if (nmLower && nmLower.includes(normalizedSection)) {
+          const nmNormalized = nmLower
+            .replace(/[-–—]/g, ' ')
+            .replace(/[™®©]/g, '')
+            .replace(/[^a-z0-9 ]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (nmNormalized && nmNormalized.includes(normalizedSection)) {
             filtered.push(p);
-            matchedNames.push(nameRaw);
+            matchedNames.push(nmNormalized);
           }
           await new Promise(r => setTimeout(r, 60));
         } catch (_) {}
