@@ -791,55 +791,34 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     }
 
     const baseListUrl = `https://api.printful.com/store/products`;
-    let listResp;
-    // Try with header only if env store id exists; otherwise try without id first
-    if (storeIdEnv) {
-      listResp = await fetch(baseListUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'CatfishEmpireServer',
-          'X-PF-Store-ID': String(storeIdEnv)
-        }
-      });
-    } else {
-      listResp = await fetch(baseListUrl, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'CatfishEmpireServer'
-        }
-      });
-    }
-    let listJson = await listResp.json().catch(() => ({}));
-    if (!listResp.ok) {
-      console.warn(`⚠️ /store/products with X-PF-Store-ID failed: ${listResp.status}`);
-      // Retry with query parameter when we have an env store id
-      const withQuery = storeIdEnv ? await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'CatfishEmpireServer'
-        }
-      }) : { ok: false };
-      listJson = withQuery.ok ? await withQuery.json().catch(() => ({})) : {};
-      if (!withQuery.ok) {
-        console.warn(`⚠️ /store/products?store_id failed: ${withQuery.status}`);
-        // Final fallback: no store id
-        const fallbackResp = await fetch(baseListUrl, {
-          headers: { Authorization: getPrintfulAuthHeader(), 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' }
-        });
-        listJson = await fallbackResp.json().catch(() => ({}));
-        if (!fallbackResp.ok) {
-          console.error('❌ Unable to list products from Printful. Returning empty list. Details:', listJson);
-          const payload = { products: [], count: 0, timestamp: now };
-          global.pfCache.productsList = { data: payload, ts: now };
-          return res.json(payload);
-        }
-        listResp = fallbackResp;
-      } else {
-        listResp = withQuery;
+    // Try without store_id first (works for tokens bound to a default store)
+    let listResp = await fetch(baseListUrl, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'CatfishEmpireServer'
       }
+    });
+    let listText = await listResp.text();
+    let listJson; try { listJson = JSON.parse(listText); } catch { listJson = { raw: listText }; }
+    // If the API explicitly requires store_id, retry with ?store_id when available
+    if (!listResp.ok && /store_id/i.test(JSON.stringify(listJson)) && storeIdEnv) {
+      const withQuery = await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'CatfishEmpireServer'
+        }
+      });
+      listText = await withQuery.text();
+      try { listJson = JSON.parse(listText); } catch { listJson = { raw: listText }; }
+      listResp = withQuery;
+    }
+    if (!listResp.ok) {
+      console.error('❌ Unable to list products from Printful. Returning empty list. Details:', listJson);
+      const payload = { products: [], count: 0, timestamp: now };
+      global.pfCache.productsList = { data: payload, ts: now };
+      return res.json(payload);
     }
     const products = Array.isArray(listJson.result) ? listJson.result : [];
 
@@ -879,25 +858,18 @@ async function getPrintfulProductDetailCached(id, token) {
   if (entry && Date.now() - entry.ts < TTL) return entry.data;
   const storeIdEnv = process.env.PRINTFUL_STORE_ID;
   const baseUrl = `https://api.printful.com/store/products/${encodeURIComponent(id)}`;
-  // Try without id first (some tokens are bound to a default store)
+  // Try without id first (default-store tokens)
   let r = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
-  let j = await r.json().catch(() => ({}));
-  if (!r.ok && storeIdEnv) {
-    // Retry with header
-    const withHeader = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer', 'X-PF-Store-ID': String(storeIdEnv) } });
-    j = await withHeader.json().catch(() => ({}));
-    if (!withHeader.ok) {
-      // Retry with query param
-      const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
-      j = await withQuery.json().catch(() => ({}));
-      if (!withQuery.ok) throw new Error(`detail ${withQuery.status}`);
-      r = withQuery;
-    } else {
-      r = withHeader;
-    }
-  } else if (!r.ok) {
-    throw new Error(`detail ${r.status}`);
+  let text = await r.text();
+  let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
+  // If store_id is required and we have one, retry with query param
+  if (!r.ok && /store_id/i.test(JSON.stringify(j)) && storeIdEnv) {
+    const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+    text = await withQuery.text();
+    try { j = JSON.parse(text); } catch { j = { raw: text }; }
+    r = withQuery;
   }
+  if (!r.ok) throw new Error(`detail ${r.status}`);
   global.pfCache.productDetailById[id] = { data: j, ts: Date.now() };
   return j;
 }
