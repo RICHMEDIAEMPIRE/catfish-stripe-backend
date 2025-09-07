@@ -801,18 +801,21 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     });
     let listText = await listResp.text();
     let listJson; try { listJson = JSON.parse(listText); } catch { listJson = { raw: listText }; }
-    // If the API explicitly requires store_id, retry with ?store_id when available
-    if (!listResp.ok && /store_id/i.test(JSON.stringify(listJson)) && storeIdEnv) {
-      const withQuery = await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, {
+    // If the API explicitly requires store_id, retry with ?store_id (env preferred, otherwise dynamic fetch)
+    if (!listResp.ok && /store_id/i.test(JSON.stringify(listJson))) {
+      const storeId = storeIdEnv || await getPrintfulStoreId().catch(() => null);
+      const withQuery = storeId ? await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeId)}`, {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
           'User-Agent': 'CatfishEmpireServer'
         }
-      });
-      listText = await withQuery.text();
-      try { listJson = JSON.parse(listText); } catch { listJson = { raw: listText }; }
-      listResp = withQuery;
+      }) : { ok: false, status: 400 };
+      if (withQuery.ok) {
+        listText = await withQuery.text();
+        try { listJson = JSON.parse(listText); } catch { listJson = { raw: listText }; }
+        listResp = withQuery;
+      }
     }
     if (!listResp.ok) {
       console.error('❌ Unable to list products from Printful. Returning empty list. Details:', listJson);
@@ -862,12 +865,15 @@ async function getPrintfulProductDetailCached(id, token) {
   let r = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
   let text = await r.text();
   let j; try { j = JSON.parse(text); } catch { j = { raw: text }; }
-  // If store_id is required and we have one, retry with query param
-  if (!r.ok && /store_id/i.test(JSON.stringify(j)) && storeIdEnv) {
-    const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
-    text = await withQuery.text();
-    try { j = JSON.parse(text); } catch { j = { raw: text }; }
-    r = withQuery;
+  // If store_id is required, retry with env id or dynamically fetched id
+  if (!r.ok && /store_id/i.test(JSON.stringify(j))) {
+    const storeId = storeIdEnv || await getPrintfulStoreId().catch(() => null);
+    if (storeId) {
+      const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeId)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+      text = await withQuery.text();
+      try { j = JSON.parse(text); } catch { j = { raw: text }; }
+      r = withQuery;
+    }
   }
   if (!r.ok) throw new Error(`detail ${r.status}`);
   global.pfCache.productDetailById[id] = { data: j, ts: Date.now() };
