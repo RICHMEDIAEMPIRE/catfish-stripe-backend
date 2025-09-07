@@ -791,9 +791,23 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     }
 
     const listUrl = `https://api.printful.com/store/products?store_id=${encodeURIComponent(storeId)}`;
-    const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
-    const listJson = await listResp.json();
-    if (!listResp.ok) return res.status(listResp.status).json(listJson);
+    let listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+    let listJson = await listResp.json().catch(() => ({}));
+    if (!listResp.ok) {
+      console.warn(`⚠️ /store/products with store_id failed: ${listResp.status}`);
+      // Fallback: try without store_id using generic auth header
+      const fallbackResp = await fetch('https://api.printful.com/store/products', {
+        headers: { Authorization: getPrintfulAuthHeader(), 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' }
+      });
+      listJson = await fallbackResp.json().catch(() => ({}));
+      if (!fallbackResp.ok) {
+        console.error('❌ Unable to list products from Printful. Returning empty list. Details:', listJson);
+        const payload = { products: [], count: 0, timestamp: now };
+        global.pfCache.productsList = { data: payload, ts: now };
+        return res.json(payload);
+      }
+      listResp = fallbackResp;
+    }
     const products = Array.isArray(listJson.result) ? listJson.result : [];
 
     const cards = [];
