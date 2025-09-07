@@ -821,13 +821,13 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     const allProducts = Array.isArray(productsData.result) ? productsData.result : [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
 
-    // Map each product to required fields (name, thumbnail_url, price, id, external_id)
-    const mapped = [];
+    // Enrich each product to required shape
+    const enriched = [];
     for (const p of allProducts) {
       let name = p.name || '';
-      let thumbnail_url = p.thumbnail_url || '';
+      let image = p.thumbnail_url || '';
       let price = null;
-      let external_id = p.external_id || null;
+      const external_id = p.external_id || null;
 
       try {
         const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
@@ -844,10 +844,13 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           const variants = dJson?.result?.sync_variants || [];
           if (prod?.name) name = prod.name;
           const firstVar = variants[0];
-          if (firstVar?.retail_price) price = parseFloat(firstVar.retail_price);
-          const vFile = firstVar?.files?.[0];
-          if (!thumbnail_url && (vFile?.preview_url || vFile?.thumbnail_url)) {
-            thumbnail_url = vFile.preview_url || vFile.thumbnail_url;
+          if (firstVar) {
+            if (firstVar.retail_price) price = firstVar.retail_price;
+            else if (firstVar.price) price = firstVar.price;
+            const vFile = firstVar.files?.[0];
+            if (!image && (vFile?.preview_url || vFile?.thumbnail_url)) {
+              image = vFile.preview_url || vFile.thumbnail_url;
+            }
           }
         }
         await new Promise(r => setTimeout(r, 50));
@@ -855,17 +858,17 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         console.warn(`⚠️ Detail fetch failed for product ${p.id}:`, e.message);
       }
 
-      mapped.push({ id: p.id, external_id, name, thumbnail_url, price });
+      enriched.push({ id: p.id, name, image, price, external_id });
     }
 
     const responseData = {
-      products: mapped,
-      count: mapped.length,
+      products: enriched,
+      count: enriched.length,
       timestamp: now,
       section: String(req.query.section || '')
     };
 
-    console.log(`🎯 Returning ${responseData.count} products (mapped fields)`);
+    console.log(`🎯 Returning ${responseData.count} enriched products`);
 
     // Cache the results
     global.printfulCache[cacheKey] = {
