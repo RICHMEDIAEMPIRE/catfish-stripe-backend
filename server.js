@@ -783,7 +783,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
     const now = Date.now();
     const token = process.env.PRINTFUL_API_KEY;
-    const storeId = process.env.PRINTFUL_STORE_ID || await getPrintfulStoreId();
+    const storeIdEnv = process.env.PRINTFUL_STORE_ID;
     if (!token) return res.status(500).json({ error: 'Printful token missing' });
 
     if (global.pfCache.productsList.data && now - global.pfCache.productsList.ts < TTL) {
@@ -791,27 +791,38 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     }
 
     const baseListUrl = `https://api.printful.com/store/products`;
-    // Try header first
-    let listResp = await fetch(baseListUrl, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'CatfishEmpireServer',
-        'X-PF-Store-ID': String(storeId)
-      }
-    });
-    let listJson = await listResp.json().catch(() => ({}));
-    if (!listResp.ok) {
-      console.warn(`⚠️ /store/products with X-PF-Store-ID failed: ${listResp.status}`);
-      // Retry with query parameter
-      const withQuery = await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeId)}`, {
+    let listResp;
+    // Try with header only if env store id exists; otherwise try without id first
+    if (storeIdEnv) {
+      listResp = await fetch(baseListUrl, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'CatfishEmpireServer',
+          'X-PF-Store-ID': String(storeIdEnv)
+        }
+      });
+    } else {
+      listResp = await fetch(baseListUrl, {
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
           'User-Agent': 'CatfishEmpireServer'
         }
       });
-      listJson = await withQuery.json().catch(() => ({}));
+    }
+    let listJson = await listResp.json().catch(() => ({}));
+    if (!listResp.ok) {
+      console.warn(`⚠️ /store/products with X-PF-Store-ID failed: ${listResp.status}`);
+      // Retry with query parameter when we have an env store id
+      const withQuery = storeIdEnv ? await fetch(`${baseListUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'CatfishEmpireServer'
+        }
+      }) : { ok: false };
+      listJson = withQuery.ok ? await withQuery.json().catch(() => ({})) : {};
       if (!withQuery.ok) {
         console.warn(`⚠️ /store/products?store_id failed: ${withQuery.status}`);
         // Final fallback: no store id
@@ -866,17 +877,26 @@ async function getPrintfulProductDetailCached(id, token) {
   if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
   const entry = global.pfCache.productDetailById[id];
   if (entry && Date.now() - entry.ts < TTL) return entry.data;
-  const storeId = process.env.PRINTFUL_STORE_ID || await getPrintfulStoreId();
+  const storeIdEnv = process.env.PRINTFUL_STORE_ID;
   const baseUrl = `https://api.printful.com/store/products/${encodeURIComponent(id)}`;
-  // Try with header first
-  let r = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer', 'X-PF-Store-ID': String(storeId) } });
+  // Try without id first (some tokens are bound to a default store)
+  let r = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
   let j = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    // Retry with query param
-    const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeId)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
-    j = await withQuery.json().catch(() => ({}));
-    if (!withQuery.ok) throw new Error(`detail ${withQuery.status}`);
-    r = withQuery;
+  if (!r.ok && storeIdEnv) {
+    // Retry with header
+    const withHeader = await fetch(baseUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer', 'X-PF-Store-ID': String(storeIdEnv) } });
+    j = await withHeader.json().catch(() => ({}));
+    if (!withHeader.ok) {
+      // Retry with query param
+      const withQuery = await fetch(`${baseUrl}?store_id=${encodeURIComponent(storeIdEnv)}`, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+      j = await withQuery.json().catch(() => ({}));
+      if (!withQuery.ok) throw new Error(`detail ${withQuery.status}`);
+      r = withQuery;
+    } else {
+      r = withHeader;
+    }
+  } else if (!r.ok) {
+    throw new Error(`detail ${r.status}`);
   }
   global.pfCache.productDetailById[id] = { data: j, ts: Date.now() };
   return j;
