@@ -842,16 +842,55 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         if (dResp.ok) {
           const dJson = await dResp.json();
           const prod = dJson?.result?.sync_product;
-          const variants = dJson?.result?.sync_variants || [];
+          const variants = dJson?.result?.sync_variants || dJson?.result?.variants || [];
           if (prod?.name) name = prod.name;
           const firstVar = variants[0];
           if (firstVar) {
             if (firstVar.retail_price) price = String(firstVar.retail_price);
             else if (firstVar.price) price = String(firstVar.price);
-            const vFile = firstVar.files?.[0];
+            const vFile = firstVar.files?.find(f => f.preview_url) || firstVar.files?.[0];
             if (!image && (vFile?.preview_url || vFile?.thumbnail_url)) {
               image = vFile.preview_url || vFile.thumbnail_url;
             }
+          }
+
+          // Build variant map: color -> size -> { id, price, image }
+          const colorsSet = new Set();
+          const sizesSet = new Set();
+          const variantMap = {}; // key: `${color}|||${size}` → value
+
+          const parseColorSize = (v) => {
+            const explicitColor = v.color || v.product_color || null;
+            const explicitSize = v.size || v.product_size || null;
+            if (explicitColor && explicitSize) return { color: String(explicitColor), size: String(explicitSize) };
+            const parts = String(v.name || '').split('/').map(s => s.trim());
+            if (parts.length >= 2) return { color: parts[0], size: parts[1] };
+            return { color: explicitColor || '', size: explicitSize || '' };
+          };
+
+          for (const v of variants) {
+            const { color, size } = parseColorSize(v);
+            if (!color || !size) continue;
+            colorsSet.add(color);
+            sizesSet.add(size);
+            const vPrice = parseFloat(v.retail_price || v.price || '0');
+            const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
+            const vImage = file.preview_url || file.thumbnail_url || image || '';
+            const key = `${color}|||${size}`;
+            variantMap[key] = {
+              id: v.id,
+              price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
+              image: vImage,
+              color,
+              size,
+              name: v.name || `${color} / ${size}`
+            };
+          }
+
+          // Ensure top-level image falls back to any variant image
+          if (!image) {
+            const any = Object.values(variantMap)[0];
+            if (any && any.image) image = any.image;
           }
         }
         await new Promise(r => setTimeout(r, 50));
@@ -861,7 +900,28 @@ app.get("/api/printful-products", cors(), async (req, res) => {
 
       // If price is missing, set placeholder so frontend can still render dropdowns/tests
       if (price == null || price === '') price = 'TBD';
-      enriched.push({ id: p.id, name, image, price, external_id });
+      // Extract aggregate images from variants for zoom overlay
+      const images = [];
+      try {
+        const vals = Object.values(variantMap);
+        for (const v of vals) {
+          if (v.image) images.push({ url: v.image, thumbnail: v.image, title: `${name} - ${v.color}/${v.size}` });
+        }
+      } catch {}
+
+      enriched.push({ 
+        id: p.id, 
+        name, 
+        image, 
+        price, 
+        external_id,
+        type: 'printful',
+        freeShipping: true,
+        images,
+        colors: Array.from(new Set(Object.values(variantMap).map(x => x.color))).filter(Boolean),
+        sizes: Array.from(new Set(Object.values(variantMap).map(x => x.size))).filter(Boolean),
+        variantMap
+      });
     }
 
     const responseData = {
@@ -997,7 +1057,11 @@ app.post("/create-checkout-session", async (req, res) => {
             currency: item.currency?.toLowerCase() || "usd",
             product_data: { 
               name: item.name || 'Catfish Empire Product',
-              images: item.image ? [item.image] : []
+              images: item.image ? [item.image] : [],
+              metadata: {
+                printful_variant_id: String(item.variantId || item.variant_id || ''),
+                external_id: item.external_id ? String(item.external_id) : undefined
+              }
             },
             unit_amount: priceInCents,
           },
