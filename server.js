@@ -859,8 +859,8 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         console.warn(`⚠️ Detail fetch failed for product ${p.id} (external_id ${external_id || 'n/a'}):`, e.message);
       }
 
-      // Skip products without a price to avoid frontend errors
-      if (price == null || price === '') continue;
+      // If price is missing, set placeholder so frontend can still render dropdowns/tests
+      if (price == null || price === '') price = 'TBD';
       enriched.push({ id: p.id, name, image, price, external_id });
     }
 
