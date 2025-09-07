@@ -828,6 +828,8 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       let image = p.thumbnail_url || '';
       let price = null; // string or number
       const external_id = p.external_id || null;
+      let variantMap = {}; // id -> { size, color, price, image }
+      let variantsArray = [];
 
       try {
         const detailId = external_id || p.id;
@@ -854,11 +856,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
             }
           }
 
-          // Build variant map: color -> size -> { id, price, image }
-          const colorsSet = new Set();
-          const sizesSet = new Set();
-          const variantMap = {}; // key: `${color}|||${size}` → value
-
+          // Build variantMap: id -> { size, color, price, image }
           const parseColorSize = (v) => {
             const explicitColor = v.color || v.product_color || null;
             const explicitSize = v.size || v.product_size || null;
@@ -868,24 +866,33 @@ app.get("/api/printful-products", cors(), async (req, res) => {
             return { color: explicitColor || '', size: explicitSize || '' };
           };
 
+          let processedCount = 0;
           for (const v of variants) {
-            const { color, size } = parseColorSize(v);
-            if (!color || !size) continue;
-            colorsSet.add(color);
-            sizesSet.add(size);
-            const vPrice = parseFloat(v.retail_price || v.price || '0');
-            const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
-            const vImage = file.preview_url || file.thumbnail_url || image || '';
-            const key = `${color}|||${size}`;
-            variantMap[key] = {
-              id: v.id,
-              price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
-              image: vImage,
-              color,
-              size,
-              name: v.name || `${color} / ${size}`
-            };
+            try {
+              const { color, size } = parseColorSize(v);
+              const vPrice = parseFloat(v.retail_price || v.price || '0');
+              const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
+              const vImage = file.preview_url || file.thumbnail_url || image || '';
+              variantMap[v.id] = {
+                size: size || '',
+                color: color || '',
+                price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
+                image: vImage
+              };
+              variantsArray.push({
+                variant_id: v.id,
+                size: size || '',
+                color: color || '',
+                price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
+                image_url: vImage
+              });
+              processedCount += 1;
+              console.log(`🔧 Processed variant ${v.id} (${color || 'N/A'} / ${size || 'N/A'})`);
+            } catch (e) {
+              console.warn(`⚠️ Failed processing variant for product ${p.id}:`, e.message);
+            }
           }
+          console.log(`🧩 Built variantMap for product ${p.id} with ${processedCount} variants`);
 
           // Ensure top-level image falls back to any variant image
           if (!image) {
@@ -915,12 +922,15 @@ app.get("/api/printful-products", cors(), async (req, res) => {
         image, 
         price, 
         external_id,
+        thumbnail_url: image,
+        product_id: p.id,
         type: 'printful',
         freeShipping: true,
         images,
         colors: Array.from(new Set(Object.values(variantMap).map(x => x.color))).filter(Boolean),
         sizes: Array.from(new Set(Object.values(variantMap).map(x => x.size))).filter(Boolean),
-        variantMap
+        variantMap,
+        variants: variantsArray
       });
     }
 
