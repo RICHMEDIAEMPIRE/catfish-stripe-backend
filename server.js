@@ -818,24 +818,54 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       return res.status(listResp.status).json({ error: 'Printful list error', details: productsData });
     }
 
-    let allProducts = Array.isArray(productsData.result) ? productsData.result : [];
+    const allProducts = Array.isArray(productsData.result) ? productsData.result : [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
 
-    // Do not filter by section: always return all products
+    // Map each product to required fields (name, thumbnail_url, price, id, external_id)
+    const mapped = [];
+    for (const p of allProducts) {
+      let name = p.name || '';
+      let thumbnail_url = p.thumbnail_url || '';
+      let price = null;
+      let external_id = p.external_id || null;
 
-    // Return products without further enrichment per simplified spec
-    // Optionally also log matched product names
-    const namesSample = allProducts.slice(0, 10).map(p => p.name || p.id);
-    console.log('🧾 Names sample:', namesSample);
+      try {
+        const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${printfulApiKey}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Catfish-Empire/1.0'
+          }
+        });
+        if (dResp.ok) {
+          const dJson = await dResp.json();
+          const prod = dJson?.result?.sync_product;
+          const variants = dJson?.result?.sync_variants || [];
+          if (prod?.name) name = prod.name;
+          const firstVar = variants[0];
+          if (firstVar?.retail_price) price = parseFloat(firstVar.retail_price);
+          const vFile = firstVar?.files?.[0];
+          if (!thumbnail_url && (vFile?.preview_url || vFile?.thumbnail_url)) {
+            thumbnail_url = vFile.preview_url || vFile.thumbnail_url;
+          }
+        }
+        await new Promise(r => setTimeout(r, 50));
+      } catch (e) {
+        console.warn(`⚠️ Detail fetch failed for product ${p.id}:`, e.message);
+      }
+
+      mapped.push({ id: p.id, external_id, name, thumbnail_url, price });
+    }
 
     const responseData = {
-      products: allProducts,
-      count: allProducts.length,
+      products: mapped,
+      count: mapped.length,
       timestamp: now,
-      section: sectionParam || ''
+      section: String(req.query.section || '')
     };
 
-    console.log(`🎯 Returning ${responseData.count} products for section '${responseData.section || '(all)'}'`);
+    console.log(`🎯 Returning ${responseData.count} products (mapped fields)`);
 
     // Cache the results
     global.printfulCache[cacheKey] = {
