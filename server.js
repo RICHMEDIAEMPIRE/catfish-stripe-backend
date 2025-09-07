@@ -327,6 +327,50 @@ function getPrintfulAuthHeader() {
   return `Bearer ${token}`;
 }
 
+// Fetch details for a specific Printful store variant (name, price, image, color, size)
+async function fetchPrintfulVariantDetails(variantId) {
+  if (!variantId) throw new Error('Missing Printful variantId');
+  const baseUrl = `https://api.printful.com/store/variants/${encodeURIComponent(variantId)}`;
+  let url = baseUrl;
+  let resp = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: getPrintfulAuthHeader(),
+      'Content-Type': 'application/json',
+      'User-Agent': 'Catfish Empire Server'
+    }
+  });
+  let text = await resp.text();
+  let data; try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  if (resp.status === 400 && /store_id/i.test(JSON.stringify(data))) {
+    const storeId = await getPrintfulStoreId();
+    url = `${baseUrl}?store_id=${encodeURIComponent(storeId)}`;
+    resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: getPrintfulAuthHeader(),
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+    text = await resp.text();
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+  }
+  if (!resp.ok) {
+    throw new Error(`Variant fetch failed ${resp.status}: ${text}`);
+  }
+  const sv = data?.result?.sync_variant || data?.result || {};
+  const files = sv.files || [];
+  const file = files.find(f => f.preview_url) || files[0] || {};
+  const image_url = file.preview_url || file.thumbnail_url || '';
+  const name = sv.name || 'Printful Variant';
+  const price = parseFloat(sv.retail_price || sv.price || '0') || 0;
+  const parsed = String(name).split('/').map(s => s.trim());
+  const color = sv.color || sv.product_color || (parsed.length >= 2 ? parsed[0] : '');
+  const size = sv.size || sv.product_size || (parsed.length >= 2 ? parsed[1] : '');
+  return { id: Number(variantId), name, price, image_url, color, size };
+}
+
 // GET /auth/printful/login → redirect user to Printful OAuth consent
 app.get('/auth/printful/login', (req, res) => {
   try {
@@ -1058,37 +1102,40 @@ app.post("/create-checkout-session", async (req, res) => {
 
   try {
     // Create line items with dynamic pricing based on product type
-    const line_items = items.map((item) => {
+    const line_items = [];
+    for (const item of items) {
       if (item.type === 'printful') {
-        // Printful product - use dynamic pricing
-        const priceInCents = Math.round((item.price || 0) * 100);
-        return {
+        // Fetch live variant details from Printful for reliability
+        const variantId = item.variantId || item.variant_id;
+        const v = await fetchPrintfulVariantDetails(variantId);
+        const priceInCents = Math.round((v.price || 0) * 100);
+        line_items.push({
           price_data: {
-            currency: item.currency?.toLowerCase() || "usd",
-            product_data: { 
-              name: item.name || 'Catfish Empire Product',
-              images: item.image ? [item.image] : [],
+            currency: (item.currency || 'USD').toLowerCase(),
+            product_data: {
+              name: v.name || item.name || 'Catfish Empire Product',
+              images: v.image_url ? [v.image_url] : (item.image ? [item.image] : []),
               metadata: {
-                printful_variant_id: String(item.variantId || item.variant_id || ''),
+                printful_variant_id: String(variantId || ''),
                 external_id: item.external_id ? String(item.external_id) : undefined
               }
             },
-            unit_amount: priceInCents,
+            unit_amount: priceInCents
           },
-          quantity: item.qty || 1,
-        };
+          quantity: item.qty || 1
+        });
       } else {
         // Sunglasses product - use existing hardcoded pricing
-        return {
+        line_items.push({
           price_data: {
             currency: "usd",
             product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
             unit_amount: 1499,
           },
           quantity: item.qty,
-        };
+        });
       }
-    });
+    }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
