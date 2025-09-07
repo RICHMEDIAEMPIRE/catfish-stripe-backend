@@ -779,227 +779,79 @@ app.get("/printful/products", cors(), async (req, res) => {
 // Enhanced Printful API endpoint for "Catfish Empire" section with detailed product info
 app.get("/api/printful-products", cors(), async (req, res) => {
   try {
-    const sectionParam = String(req.query.section || '').trim().toLowerCase();
-    console.log("🔍 /api/printful-products called. section=", sectionParam || '(none)');
-    
-    const printfulApiKey = process.env.PRINTFUL_API_KEY;
-    if (!printfulApiKey) {
-      console.error("❌ Printful API key not configured");
-      return res.status(500).json({ error: "Printful API key not configured" });
-    }
-    
-    // Debug API key (safely)
-    console.log(`🔑 API Key found - Length: ${printfulApiKey.length}, Starts with: ${printfulApiKey.substring(0, 8)}...`);
-    
-    // Test authentication first with a simple API call
-    console.log("🧪 Testing Printful API authentication...");
-    const authTestResponse = await fetch('https://api.printful.com/oauth/scopes', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Catfish-Empire/1.0'
-      }
-    });
-    
-    console.log(`🔍 Auth test status: ${authTestResponse.status}`);
-    if (!authTestResponse.ok) {
-      const authError = await authTestResponse.text();
-      console.error(`❌ Printful auth test failed: ${authTestResponse.status} - ${authError}`);
-      return res.status(401).json({ 
-        error: "Printful API authentication failed", 
-        status: authTestResponse.status,
-        details: "You need a new OAuth 2.0 Bearer token from https://developers.printful.com/ - Basic authentication is deprecated"
-      });
-    }
-    
-    console.log("✅ Printful authentication successful!");
-
-    // Cache for enhanced Printful products (15 minute TTL)
-    const cacheKey = 'all_printful_products';
+    const TTL = 15 * 60 * 1000;
+    if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
     const now = Date.now();
-    
-    if (!global.printfulCache) global.printfulCache = {};
-    
-    if (global.printfulCache[cacheKey] && 
-        (now - global.printfulCache[cacheKey].timestamp) < (15 * 60 * 1000)) {
-      console.log("✅ Using cached Printful products");
-      return res.json(global.printfulCache[cacheKey].data);
+    const token = process.env.PRINTFUL_API_KEY;
+    const storeId = process.env.PRINTFUL_STORE_ID || await getPrintfulStoreId();
+    if (!token) return res.status(500).json({ error: 'Printful token missing' });
+
+    if (global.pfCache.productsList.data && now - global.pfCache.productsList.ts < TTL) {
+      return res.json(global.pfCache.productsList.data);
     }
 
-    // Direct call to Printful list endpoint as requested
-    let listResp = await fetch('https://api.printful.com/store/products', {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${printfulApiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Catfish-Empire/1.0'
-      }
-    });
-    let text = await listResp.text();
-    let productsData; try { productsData = JSON.parse(text); } catch { productsData = { raw: text }; }
-    console.log("Printful response:", JSON.stringify(productsData, null, 2));
+    const listUrl = `https://api.printful.com/store/products?store_id=${encodeURIComponent(storeId)}`;
+    const listResp = await fetch(listUrl, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+    const listJson = await listResp.json();
+    if (!listResp.ok) return res.status(listResp.status).json(listJson);
+    const products = Array.isArray(listJson.result) ? listJson.result : [];
 
-    // Retry with store_id if required
-    if (listResp.status === 400 && /store_id/i.test(JSON.stringify(productsData))) {
-      const storeId = await getPrintfulStoreId();
-      const url = `https://api.printful.com/store/products?store_id=${encodeURIComponent(storeId)}`;
-      console.log('🔁 Retrying list with store_id:', url);
-      listResp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${printfulApiKey}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'Catfish-Empire/1.0'
-        }
-      });
-      text = await listResp.text();
-      try { productsData = JSON.parse(text); } catch { productsData = { raw: text }; }
-      console.log("Printful response (with store_id):", JSON.stringify(productsData, null, 2));
-    }
-
-    if (!listResp.ok) {
-      return res.status(listResp.status).json({ error: 'Printful list error', details: productsData });
-    }
-
-    const allProducts = Array.isArray(productsData.result) ? productsData.result : [];
-    console.log(`📦 Found ${allProducts.length} total Printful products`);
-
-    // Enrich each product to required shape
-    const enriched = [];
-    for (const p of allProducts) {
-      let name = p.name || '';
-      let image = p.thumbnail_url || '';
-      let price = null; // string or number
-      const external_id = p.external_id || null;
-      let variantMap = {}; // id -> { size, color, price, image }
-      let variantsArray = [];
-
+    const cards = [];
+    for (const p of products) {
       try {
-        const detailId = external_id || p.id;
-        const dResp = await fetch(`https://api.printful.com/store/products/${detailId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${printfulApiKey}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'Catfish-Empire/1.0'
-          }
-        });
-        if (dResp.ok) {
-          const dJson = await dResp.json();
-          const prod = dJson?.result?.sync_product;
-          const variants = dJson?.result?.sync_variants || dJson?.result?.variants || [];
-          if (prod?.name) name = prod.name;
-          const firstVar = variants[0];
-          if (firstVar) {
-            if (firstVar.retail_price) price = String(firstVar.retail_price);
-            else if (firstVar.price) price = String(firstVar.price);
-            const vFile = firstVar.files?.find(f => f.preview_url) || firstVar.files?.[0];
-            if (!image && (vFile?.preview_url || vFile?.thumbnail_url)) {
-              image = vFile.preview_url || vFile.thumbnail_url;
-            }
-          }
-
-          // Build variantMap: id -> { size, color, price, image }
-          const parseColorSize = (v) => {
-            const explicitColor = v.color || v.product_color || null;
-            const explicitSize = v.size || v.product_size || null;
-            if (explicitColor && explicitSize) return { color: String(explicitColor), size: String(explicitSize) };
-            const parts = String(v.name || '').split('/').map(s => s.trim());
-            if (parts.length >= 2) return { color: parts[0], size: parts[1] };
-            return { color: explicitColor || '', size: explicitSize || '' };
-          };
-
-          let processedCount = 0;
-          for (const v of variants) {
-            try {
-              const { color, size } = parseColorSize(v);
-              const vPrice = parseFloat(v.retail_price || v.price || '0');
-              const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
-              const vImage = file.preview_url || file.thumbnail_url || image || '';
-              variantMap[v.id] = {
-                size: size || '',
-                color: color || '',
-                price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
-                image: vImage
-              };
-              variantsArray.push({
-                variant_id: v.id,
-                size: size || '',
-                color: color || '',
-                price: isFinite(vPrice) && vPrice > 0 ? vPrice : null,
-                image_url: vImage
-              });
-              processedCount += 1;
-              console.log(`🔧 Processed variant ${v.id} (${color || 'N/A'} / ${size || 'N/A'})`);
-            } catch (e) {
-              console.warn(`⚠️ Failed processing variant for product ${p.id}:`, e.message);
-            }
-          }
-          console.log(`🧩 Built variantMap for product ${p.id} with ${processedCount} variants`);
-
-          // Ensure top-level image falls back to any variant image
-          if (!image) {
-            const any = Object.values(variantMap)[0];
-            if (any && any.image) image = any.image;
+        const d = await getPrintfulProductDetailCached(p.id, token);
+        const variants = d?.result?.sync_variants || [];
+        let minCents = null;
+        for (const v of variants) {
+          const cents = Math.round(parseFloat(v.retail_price || v.price || '0') * 100);
+          if (isFinite(cents) && cents > 0) {
+            minCents = minCents == null ? cents : Math.min(minCents, cents);
           }
         }
-        await new Promise(r => setTimeout(r, 50));
+        cards.push({ id: p.id, name: (d?.result?.sync_product?.name) || p.name || 'Product', thumb: (p.thumbnail_url || d?.result?.sync_product?.thumbnail_url || ''), priceMinCents: minCents, currency: minCents != null ? 'USD' : null, hasVariants: true });
+        await new Promise(r => setTimeout(r, 35));
       } catch (e) {
-        console.warn(`⚠️ Detail fetch failed for product ${p.id} (external_id ${external_id || 'n/a'}):`, e.message);
+        console.warn('Card build failed for', p.id, e.message);
+        cards.push({ id: p.id, name: p.name || 'Product', thumb: p.thumbnail_url || '', priceMinCents: null, currency: null, hasVariants: true });
       }
-
-      // If price is missing, set placeholder so frontend can still render dropdowns/tests
-      if (price == null || price === '') price = 'TBD';
-      // Extract aggregate images from variants for zoom overlay
-      const images = [];
-      try {
-        const vals = Object.values(variantMap);
-        for (const v of vals) {
-          if (v.image) images.push({ url: v.image, thumbnail: v.image, title: `${name} - ${v.color}/${v.size}` });
-        }
-      } catch {}
-
-      enriched.push({ 
-        id: p.id, 
-        name, 
-        image, 
-        price, 
-        external_id,
-        thumbnail_url: image,
-        product_id: p.id,
-        type: 'printful',
-        freeShipping: true,
-        images,
-        colors: Array.from(new Set(Object.values(variantMap).map(x => x.color))).filter(Boolean),
-        sizes: Array.from(new Set(Object.values(variantMap).map(x => x.size))).filter(Boolean),
-        variantMap,
-        variants: variantsArray
-      });
     }
 
-    const responseData = {
-      products: enriched,
-      count: enriched.length,
-      timestamp: now,
-      section: String(req.query.section || '')
-    };
-
-    console.log(`🎯 Returning ${responseData.count} enriched products`);
-
-    // Cache the results
-    global.printfulCache[cacheKey] = {
-      data: responseData,
-      timestamp: now
-    };
-
-    res.json(responseData);
+    const payload = { products: cards, count: cards.length, timestamp: now };
+    global.pfCache.productsList = { data: payload, ts: now };
+    res.json(payload);
   } catch (error) {
-    console.error('❌ Catfish Empire Printful fetch error:', error);
-    res.status(500).json({ 
-      error: "Failed to fetch Catfish Empire Printful products",
-      details: error.message 
-    });
+    console.error('❌ /api/printful-products error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function getPrintfulProductDetailCached(id, token) {
+  const TTL = 15 * 60 * 1000;
+  if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
+  const entry = global.pfCache.productDetailById[id];
+  if (entry && Date.now() - entry.ts < TTL) return entry.data;
+  const url = `https://api.printful.com/store/products/${encodeURIComponent(id)}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'CatfishEmpireServer' } });
+  const j = await r.json();
+  if (!r.ok) throw new Error(`detail ${r.status}`);
+  global.pfCache.productDetailById[id] = { data: j, ts: Date.now() };
+  return j;
+}
+
+// Optional helper: single variant details with caching
+app.get('/api/printful/variant/:variantId', cors(), async (req, res) => {
+  try {
+    const variantId = String(req.params.variantId);
+    const TTL = 15 * 60 * 1000;
+    if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
+    const cached = global.pfCache.variantById[variantId];
+    if (cached && Date.now() - cached.ts < TTL) return res.json(cached.data);
+    const v = await fetchPrintfulVariantDetails(variantId);
+    const data = { id: v.id, priceCents: Math.round((v.price || 0) * 100), currency: 'USD', color: v.color || null, size: v.size || null, name: v.name, image: v.image_url || null };
+    global.pfCache.variantById[variantId] = { data, ts: Date.now() };
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1035,45 +887,81 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
 
     const d = result.data?.result || {};
     const sp = d.sync_product || {};
-    const svs = d.sync_variants || d.variants || [];
+    const svs = Array.isArray(d.sync_variants) ? d.sync_variants : (d.variants || []);
 
-    const images = [];
-    const variantMap = {};
-    const variants = [];
+    // Build gallery (strings)
+    const imageUrlsSet = new Set();
+    if (sp.thumbnail_url) imageUrlsSet.add(sp.thumbnail_url);
+    if (Array.isArray(sp.files)) {
+      sp.files.forEach(f => { if (f.preview_url) imageUrlsSet.add(f.preview_url); });
+    }
+    svs.forEach(v => {
+      (v.files || []).forEach(f => { if (f.preview_url) imageUrlsSet.add(f.preview_url); });
+    });
+    const images = Array.from(imageUrlsSet);
 
-    const parseColorSize = (v) => {
+    // Helpers
+    const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+    function titleCase(s){ return (s||'').toString().replace(/\b\w/g,c=>c.toUpperCase()); }
+    function parseColorSize(v){
       const explicitColor = v.color || v.product_color || null;
       const explicitSize = v.size || v.product_size || null;
-      if (explicitColor && explicitSize) return { color: String(explicitColor), size: String(explicitSize) };
-      const parts = String(v.name || '').split('/').map(s => s.trim());
-      if (parts.length >= 2) return { color: parts[0], size: parts[1] };
-      return { color: explicitColor || '', size: explicitSize || '' };
-    };
+      if (explicitColor || explicitSize) return { color: explicitColor||'', size: explicitSize||'' };
+      const name = String(v.name||'');
+      const tokens = name.split(/[\/-]/).map(t=>t.trim());
+      let sizeToken = '';
+      let colorToken = '';
+      for (const t of tokens){
+        if (SIZE_LIST.includes(t.toUpperCase())) { sizeToken = t; break; }
+      }
+      if (sizeToken){
+        const other = tokens.find(t=>t!==sizeToken) || '';
+        colorToken = other;
+      } else {
+        colorToken = tokens[0]||'';
+      }
+      return { color: colorToken, size: sizeToken };
+    }
 
+    // Build variants, options, and matrix
+    const variants = [];
+    const colors = [];
+    const sizes = [];
+    const variantMatrix = {};
     let count = 0;
     for (const v of svs) {
+      const cents = Math.round(parseFloat(v.retail_price || v.price || '0') * 100);
+      if (!isFinite(cents) || cents <= 0) continue; // exclude unavailable
       const { color, size } = parseColorSize(v);
-      const vPrice = parseFloat(v.retail_price || v.price || '0') || 0;
-      const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
-      const img = file.preview_url || file.thumbnail_url || '';
-      if (img) images.push({ url: img, thumbnail: img, title: `${sp?.name || 'Variant'} - ${color}/${size}` });
-      const entry = { color, size, price: vPrice, name: v.name || `${color} / ${size}`, image_url: img };
-      variantMap[v.id] = entry;
-      variants.push({ variant_id: v.id, ...entry });
+      const rawColor = (color||'');
+      const rawSize = (size||'');
+      const file = (v.files || []).find(f => f.preview_url) || {};
+      const entry = {
+        id: v.id,
+        name: v.name || `${titleCase(rawColor)} / ${titleCase(rawSize)}`,
+        color: rawColor || null,
+        size: rawSize || null,
+        priceCents: cents,
+        currency: 'USD',
+        image: file.preview_url || null
+      };
+      variants.push(entry);
+      const key = `${(rawColor||'').toLowerCase()}|${(rawSize||'').toLowerCase()}`;
+      variantMatrix[key] = v.id;
+      if (rawColor && !colors.includes(rawColor)) colors.push(rawColor);
+      if (rawSize && !sizes.includes(rawSize)) sizes.push(rawSize);
       count++;
     }
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
-    const firstImg = images[0]?.url || '';
     res.json({
-      id: d.id || sp.id || prodId,
-      external_id: sp.external_id || d.external_id || prodId,
+      id: d.id || sp.id || Number(prodId),
       name: sp.name || d.name || 'Printful Product',
-      description: sp.description || d.description || '',
-      thumbnail_url: firstImg,
+      description: sp.description || d.description || null,
       images,
+      options: { colors, sizes },
       variants,
-      variantMap
+      variantMatrix
     });
   } catch (e) {
     console.error('❌ /api/printful-product error:', e.message);
@@ -1215,6 +1103,27 @@ app.post("/create-checkout-session", async (req, res) => {
       }
     }
 
+    const onlyPrintful = items.every((it) => it.type === 'printful');
+    const shippingOptions = onlyPrintful
+      ? [
+          {
+            shipping_rate_data: {
+              type: "fixed_amount",
+              fixed_amount: { amount: 0, currency: "usd" },
+              display_name: "Free Shipping",
+            },
+          },
+        ]
+      : [
+          {
+            shipping_rate_data: {
+              type: "fixed_amount",
+              fixed_amount: { amount: 599, currency: "usd" },
+              display_name: "Flat Rate Shipping",
+            },
+          },
+        ];
+
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
       mode: "payment",
@@ -1226,15 +1135,7 @@ app.post("/create-checkout-session", async (req, res) => {
       },
       shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: true },
-      shipping_options: [
-        {
-          shipping_rate_data: {
-            type: "fixed_amount",
-            fixed_amount: { amount: 599, currency: "usd" },
-            display_name: "Flat Rate Shipping",
-          },
-        },
-      ],
+      shipping_options: shippingOptions,
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     });
