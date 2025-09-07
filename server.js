@@ -1003,6 +1003,84 @@ app.get("/api/printful-products", cors(), async (req, res) => {
   }
 });
 
+// Get a single Printful product with full details and variants
+app.get('/api/printful-product/:id', cors(), async (req, res) => {
+  try {
+    const prodId = String(req.params.id).trim();
+    if (!prodId) return res.status(400).json({ error: 'Missing product id' });
+
+    const token = process.env.PRINTFUL_API_KEY;
+    if (!token) return res.status(500).json({ error: 'Printful token missing' });
+
+    // Try by id, then by external_id if needed
+    const tryFetch = async (idOrExt) => {
+      let url = `https://api.printful.com/store/products/${encodeURIComponent(idOrExt)}`;
+      let r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'Catfish-Empire/1.0' } });
+      let t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      if (r.status === 400 && /store_id/i.test(JSON.stringify(j))) {
+        const sid = await getPrintfulStoreId();
+        url = `https://api.printful.com/store/products/${encodeURIComponent(idOrExt)}?store_id=${encodeURIComponent(sid)}`;
+        r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'Catfish-Empire/1.0' } });
+        t = await r.text(); try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      }
+      return { ok: r.ok, status: r.status, data: j };
+    };
+
+    let result = await tryFetch(prodId);
+    if (!result.ok) {
+      // Retry with external_id
+      result = await tryFetch(prodId);
+    }
+    if (!result.ok) return res.status(result.status).json({ error: 'Printful product fetch failed', details: result.data });
+
+    const d = result.data?.result || {};
+    const sp = d.sync_product || {};
+    const svs = d.sync_variants || d.variants || [];
+
+    const images = [];
+    const variantMap = {};
+    const variants = [];
+
+    const parseColorSize = (v) => {
+      const explicitColor = v.color || v.product_color || null;
+      const explicitSize = v.size || v.product_size || null;
+      if (explicitColor && explicitSize) return { color: String(explicitColor), size: String(explicitSize) };
+      const parts = String(v.name || '').split('/').map(s => s.trim());
+      if (parts.length >= 2) return { color: parts[0], size: parts[1] };
+      return { color: explicitColor || '', size: explicitSize || '' };
+    };
+
+    let count = 0;
+    for (const v of svs) {
+      const { color, size } = parseColorSize(v);
+      const vPrice = parseFloat(v.retail_price || v.price || '0') || 0;
+      const file = (v.files || []).find(f => f.preview_url) || (v.files || [])[0] || {};
+      const img = file.preview_url || file.thumbnail_url || '';
+      if (img) images.push({ url: img, thumbnail: img, title: `${sp?.name || 'Variant'} - ${color}/${size}` });
+      const entry = { color, size, price: vPrice, name: v.name || `${color} / ${size}`, image_url: img };
+      variantMap[v.id] = entry;
+      variants.push({ variant_id: v.id, ...entry });
+      count++;
+    }
+    console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
+
+    const firstImg = images[0]?.url || '';
+    res.json({
+      id: d.id || sp.id || prodId,
+      external_id: sp.external_id || d.external_id || prodId,
+      name: sp.name || d.name || 'Printful Product',
+      description: sp.description || d.description || '',
+      thumbnail_url: firstImg,
+      images,
+      variants,
+      variantMap
+    });
+  } catch (e) {
+    console.error('❌ /api/printful-product error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Debug endpoint to test environment variables (REMOVE IN PRODUCTION)
 app.get("/debug/env", cors(), async (req, res) => {
   try {
