@@ -821,50 +821,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     let allProducts = Array.isArray(productsData.result) ? productsData.result : [];
     console.log(`📦 Found ${allProducts.length} total Printful products`);
 
-    // If a section is provided, attempt a simple name-based filter.
-    // Note: Printful product templates don't include a native "section" field;
-    // this filter matches product names/descriptions to the provided section token.
-    if (sectionParam) {
-      const normalizedSection = sectionParam
-        .replace(/[-–—]/g, ' ')
-        .replace(/[™®©]/g, '')
-        .replace(/[^a-z0-9 ]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      // For accurate filtering, fetch details and check sync_product.name
-      const filtered = [];
-      const matchedNames = [];
-      for (const p of allProducts) {
-        try {
-          const dResp = await fetch(`https://api.printful.com/store/products/${p.id}`, {
-            method: 'GET',
-            headers: {
-              'Authorization': `Bearer ${printfulApiKey}`,
-              'Content-Type': 'application/json',
-              'User-Agent': 'Catfish-Empire/1.0'
-            }
-          });
-          if (!dResp.ok) continue;
-          const dJson = await dResp.json();
-          const nameRaw = dJson?.result?.sync_product?.name || '';
-          const nmLower = nameRaw.toLowerCase();
-          const nmNormalized = nmLower
-            .replace(/[-–—]/g, ' ')
-            .replace(/[™®©]/g, '')
-            .replace(/[^a-z0-9 ]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          if (nmNormalized && nmNormalized.includes(normalizedSection)) {
-            filtered.push(p);
-            matchedNames.push(nmNormalized);
-          }
-          await new Promise(r => setTimeout(r, 60));
-        } catch (_) {}
-      }
-      allProducts = filtered;
-      console.log('✅ Matched product names:', matchedNames);
-      console.log(`🎯 Returning ${allProducts.length} enriched products for section '${sectionParam}'`);
-    }
+    // Do not filter by section: always return all products
 
     // Return products without further enrichment per simplified spec
     // Optionally also log matched product names
