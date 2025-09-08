@@ -58,6 +58,8 @@ const transporter = nodemailer.createTransport({
 });
 
 // ===== SUPABASE STORAGE HELPERS (mockups) =====
+function normColor(c){ return String(c||'').trim().toLowerCase(); }
+function validView(v){ const s = String(v||'').toLowerCase(); return ['front','back','left','right'].includes(s) ? s : null; }
 async function uploadMockupToSupabase({ productId, color, view, filename, contentType, buffer }) {
   const safeView = (view || 'other').toLowerCase();
   const path = `printful/${String(productId)}/${String(color).toLowerCase()}/${safeView}/${filename}`;
@@ -746,7 +748,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     try {
       const { data: overrideRows } = await supabase
         .from('product_overrides')
-        .select('*')
+        .select('*, custom_by_color')
         .eq('product_id', String(d.id || sp.id || prodId))
         .limit(1);
       const override = Array.isArray(overrideRows) ? overrideRows[0] : null;
@@ -778,6 +780,24 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
                 if (hid.has(galleryByColor[colorKey].views[vKey])) galleryByColor[colorKey].views[vKey] = null;
               }
             }
+          }
+        }
+        // Merge color-aware overrides
+        if (override.custom_by_color && typeof override.custom_by_color === 'object') {
+          const byColor = override.custom_by_color;
+          for (const [colorKey, val] of Object.entries(byColor)) {
+            const ck = normColor(colorKey);
+            if (!galleryByColor[ck]) {
+              galleryByColor[ck] = { images: [], views: { front:[], back:[], left:[], right:[] } };
+            }
+            const dst = galleryByColor[ck];
+            const addAll = (arr, into) => (arr||[]).forEach(u => { if (u && !into.includes(u)) into.push(u); });
+            addAll(val?.images, dst.images);
+            const v = val?.views || {};
+            addAll(v.front, dst.views.front);
+            addAll(v.back,  dst.views.back);
+            addAll(v.left,  dst.views.left);
+            addAll(v.right, dst.views.right);
           }
         }
         if (override.title_override) {
@@ -968,24 +988,78 @@ app.post('/admin/mockups/delete', async (req, res) => {
   }
 });
 
+// Admin: add mockups to a color (optional view)
+app.post('/admin/mockup/by-color', async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { product_id, color, urls, view } = req.body || {};
+    if (!product_id || !color || !Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ error: 'product_id, color, urls[] required' });
+    }
+    const ck = normColor(color);
+    const vv = validView(view);
+    const { data: row } = await supabase
+      .from('product_overrides')
+      .select('product_id, custom_by_color')
+      .eq('product_id', product_id)
+      .maybeSingle();
+    const base = row?.custom_by_color || {};
+    if (!base[ck]) base[ck] = { images: [], views: { front:[], back:[], left:[], right:[] } };
+    const dest = base[ck];
+    const pushUnique = (arr, list) => (arr||[]).forEach(u => { if (u && !list.includes(u)) list.push(u); });
+    if (vv) pushUnique(urls, dest.views[vv]); else pushUnique(urls, dest.images);
+    const { error: upErr } = await supabase
+      .from('product_overrides')
+      .upsert({ product_id, custom_by_color: base }, { onConflict: 'product_id' });
+    if (upErr) throw upErr;
+    res.json({ ok: true, custom_by_color: base });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Admin: delete mockups from a color (optional view)
+app.delete('/admin/mockup/by-color', async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { product_id, color, urls, view } = req.body || {};
+    if (!product_id || !color || !Array.isArray(urls) || urls.length === 0) {
+      return res.status(400).json({ error: 'product_id, color, urls[] required' });
+    }
+    const ck = normColor(color);
+    const vv = validView(view);
+    const { data: row } = await supabase
+      .from('product_overrides')
+      .select('custom_by_color')
+      .eq('product_id', product_id)
+      .maybeSingle();
+    const base = row?.custom_by_color || {};
+    if (!base[ck]) return res.json({ ok: true, custom_by_color: base });
+    const strip = (arr=[]) => arr.filter(u => !urls.includes(u));
+    if (vv) base[ck].views[vv] = strip(base[ck].views[vv]); else base[ck].images = strip(base[ck].images);
+    const { error: upErr } = await supabase
+      .from('product_overrides')
+      .upsert({ product_id, custom_by_color: base }, { onConflict: 'product_id' });
+    if (upErr) throw upErr;
+    res.json({ ok: true, custom_by_color: base });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Persist drag-and-drop product ordering
 app.post('/admin/product-sort', async (req, res) => {
   try {
     if (!req.session.authenticated) return res.status(403).json({ error: 'Not logged in' });
-    const { fromId, toId } = req.body || {};
-    if (!fromId || !toId) return res.status(400).json({ error: 'Missing ids' });
-    // naive: swap indices
-    const ids = [String(fromId), String(toId)];
-    const { data } = await supabase.from('product_sort').select('product_id, sort_index').in('product_id', ids);
-    const map = new Map();
-    (data||[]).forEach(r => map.set(String(r.product_id), Number(r.sort_index)||0));
-    const a = map.get(String(fromId)) ?? 0;
-    const b = map.get(String(toId)) ?? 0;
-    await supabase.from('product_sort').upsert([
-      { product_id: String(fromId), sort_index: b },
-      { product_id: String(toId), sort_index: a }
-    ], { onConflict: 'product_id' });
-    res.json({ success: true });
+    const order = Array.isArray(req.body?.order) ? req.body.order : null;
+    if (!order) return res.status(400).json({ error: 'Missing order array' });
+    const rows = order.map((id, idx) => ({ product_id: String(id), sort_index: idx }));
+    if (rows.length === 0) return res.json({ ok: true, count: 0 });
+    const { error } = await supabase.from('product_sort').upsert(rows, { onConflict: 'product_id' });
+    if (error) throw error;
+    res.json({ ok: true, count: rows.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
