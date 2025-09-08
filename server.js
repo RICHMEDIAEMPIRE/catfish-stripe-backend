@@ -302,6 +302,7 @@ const getPrintfulStoreId = async () => {
 // GET /api/printful-products → list cards { id, name, thumb, priceMinCents, currency:'USD', hasVariants:true }
 app.get("/api/printful-products", cors(), async (req, res) => {
   try {
+    const bypass = ("nocache" in req.query);
     const TTL = 15 * 60 * 1000;
     if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
     const now = Date.now();
@@ -309,7 +310,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     if (!token) return res.status(500).json({ error: 'Printful token missing' });
 
     // Return cached data if available
-    if (global.pfCache.productsList.data && now - global.pfCache.productsList.ts < TTL) {
+    if (!bypass && global.pfCache.productsList.data && now - global.pfCache.productsList.ts < TTL) {
       return res.json(global.pfCache.productsList.data);
     }
 
@@ -373,7 +374,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
     }
 
     const payload = { products: cards, count: cards.length, timestamp: now };
-    global.pfCache.productsList = { data: payload, ts: now };
+    if (!bypass) global.pfCache.productsList = { data: payload, ts: now };
     res.json(payload);
   } catch (error) {
     console.error('❌ /api/printful-products error:', error.message);
@@ -400,12 +401,13 @@ async function getPrintfulProductDetailCached(id, token) {
 // GET /api/printful/variant/:variantId → returns { id, priceCents, currency, color, size, name, image } from cached detail
 app.get('/api/printful/variant/:variantId', cors(), async (req, res) => {
   try {
+    const bypass = ("nocache" in req.query);
     const variantId = String(req.params.variantId);
     const TTL = 15 * 60 * 1000;
     if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
     
     const cached = global.pfCache.variantById[variantId];
-    if (cached && Date.now() - cached.ts < TTL) return res.json(cached.data);
+    if (!bypass && cached && Date.now() - cached.ts < TTL) return res.json(cached.data);
     
     // Fallback to withStoreId if not in cache
     const url = withStoreId(`https://api.printful.com/store/variants/${encodeURIComponent(variantId)}`);
@@ -430,7 +432,7 @@ app.get('/api/printful/variant/:variantId', cors(), async (req, res) => {
       image: file.preview_url || file.thumbnail_url || null 
     };
     
-    global.pfCache.variantById[variantId] = { data, ts: Date.now() };
+    if (!bypass) global.pfCache.variantById[variantId] = { data, ts: Date.now() };
     res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -445,6 +447,8 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
 
     const token = process.env.PRINTFUL_API_KEY;
     if (!token) return res.status(500).json({ error: 'Printful token missing' });
+
+    const bypass = ("nocache" in req.query);
 
     // Fetch product details using withStoreId helper
     const url = withStoreId(`https://api.printful.com/store/products/${encodeURIComponent(prodId)}`);
@@ -651,9 +655,35 @@ app.post("/create-checkout-session", async (req, res) => {
     const line_items = [];
     for (const item of items) {
       if (item.type === 'printful') {
-        // Fetch live variant details from Printful for server-side validation
-        const variantId = item.variantId || item.variant_id;
-        const v = await fetchPrintfulVariantDetails(variantId);
+        // Ensure we have a variantId; if missing, infer a default from product details
+        let variantId = item.variantId || item.variant_id;
+        let inferred = false;
+        let v;
+        if (!variantId) {
+          try {
+            const full = await getPrintfulProductDetailCached(item.productId || item.id, process.env.PRINTFUL_API_KEY);
+            const svs = full?.result?.sync_variants || [];
+            const priced = svs
+              .map(sv => ({ sv, cents: Math.round(parseFloat(sv.retail_price || sv.price || '0') * 100) }))
+              .filter(x => isFinite(x.cents) && x.cents > 0)
+              .sort((a,b)=>a.cents-b.cents);
+            if (!priced.length) throw new Error('No priced variants');
+            variantId = priced[0].sv.id;
+            v = { 
+              price: priced[0].sv.retail_price || priced[0].sv.price,
+              name: priced[0].sv.name,
+              image_url: (priced[0].sv.files||[]).find(f=>f.preview_url)?.preview_url || null
+            };
+            inferred = true;
+            console.log('🧩 Inferred Printful variant for checkout:', variantId);
+          } catch (e) {
+            console.warn('⚠️ Could not infer variantId for Printful item:', e.message);
+          }
+        }
+        if (!v) {
+          // Fetch live variant details from Printful for server-side validation
+          v = await fetchPrintfulVariantDetails(variantId);
+        }
         const priceInCents = Math.max(1, Math.round((v.price || 0) * 100));
         line_items.push({
           price_data: {
