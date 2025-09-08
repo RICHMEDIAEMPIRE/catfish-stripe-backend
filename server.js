@@ -74,6 +74,14 @@ async function removeMockupFromSupabase(path) {
   if (error) throw error;
 }
 
+// Global hidden image URLs (explicit suppressions)
+const GLOBAL_HIDDEN_URLS = new Set([
+  'https://files.cdn.printful.com/files/913/913bbbe9ca436bd693757d21dce528c2_preview.png',
+  'https://files.cdn.printful.com/files/b87/b87af5e750905c48adce2f19a3096443_preview.png',
+  'https://files.cdn.printful.com/files/f63/f6377c84da44db6dc356547e9066da18_preview.png'
+]);
+function isGloballyHidden(u) { return GLOBAL_HIDDEN_URLS.has(String(u || '').trim()); }
+
 // ===== SESSION & CORS =====
 const allowedOrigins = [
   process.env.CLIENT_URL,
@@ -649,7 +657,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const galleryByColor = {}; // colorLower -> { views: {front,back,left,right}, images: [] }
     const viewOrder = ['front','back','left-front','right-front','left','right','other'];
     if (Array.isArray(sp.files)) {
-      sp.files.forEach(f => { if (f?.preview_url && !isDesign(f.preview_url)) globalImagesSet.add(f.preview_url); });
+      sp.files.forEach(f => { const u=f?.preview_url; if (u && !isDesign(u) && !isGloballyHidden(u)) globalImagesSet.add(u); });
     }
     for (const v of svs) {
       const { color } = parseColorSize(v);
@@ -657,7 +665,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       const files = Array.isArray(v.files) ? v.files : [];
       for (const f of files) {
         const url = f?.preview_url;
-        if (!url || isDesign(url)) continue;
+        if (!url || isDesign(url) || isGloballyHidden(url)) continue;
         const view = viewFromUrl(url);
         globalImagesSet.add(url);
         if (!mockupsByColor[colorKey]) mockupsByColor[colorKey] = [];
