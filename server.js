@@ -356,6 +356,15 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           const front = files.find(f => (f.preview_url||'').toLowerCase().includes('front'));
           if (front?.preview_url) thumb = front.preview_url;
         }
+        // If product detail already computed coverByColor, prefer that
+        try {
+          const detail = await getPrintfulProductDetailCached(p.id, token);
+          const resultDetail = detail?.result || {};
+          const svsDetail = Array.isArray(resultDetail.sync_variants) ? resultDetail.sync_variants : [];
+          const galleryGuess = svsDetail?.[0]?.files || [];
+          const front2 = galleryGuess.find(f => (f.preview_url||'').toLowerCase().includes('front'));
+          if (front2?.preview_url) thumb = front2.preview_url;
+        } catch {}
         cards.push({ 
           id: p.id, 
           name: (d?.result?.sync_product?.name) || p.name || 'Product', 
@@ -511,6 +520,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const globalImagesSet = new Set();
     const mockupsByColor = {};
     const coverByColor = {};
+    const galleryByColor = {}; // colorLower -> { views: {front,back,left,right}, images: [] }
     const viewOrder = ['front','back','left-front','right-front','left','right','other'];
     if (Array.isArray(sp.files)) {
       sp.files.forEach(f => { if (f?.preview_url && !isDesign(f.preview_url)) globalImagesSet.add(f.preview_url); });
@@ -534,6 +544,14 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       mockupsByColor[colorKey].sort((a,b) => viewOrder.indexOf(a.view) - viewOrder.indexOf(b.view));
       const front = mockupsByColor[colorKey].find(m => m.view === 'front');
       coverByColor[colorKey] = (front?.url) || (mockupsByColor[colorKey][0]?.url) || null;
+      const views = {};
+      for (const m of mockupsByColor[colorKey]) {
+        if (['front','back','left','right','left-front','right-front'].includes(m.view) && !views[m.view]) {
+          views[m.view] = m.url;
+        }
+      }
+      const imagesList = Array.from(new Set(mockupsByColor[colorKey].map(m => m.url)));
+      galleryByColor[colorKey] = { views: views, images: imagesList };
     });
     let images = Array.from(globalImagesSet);
 
@@ -565,6 +583,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const colors = [];
     const sizes = [];
     const variantMatrix = {};
+    const priceByKey = {};
     let count = 0;
     
     for (const v of svs) {
@@ -589,6 +608,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       
       const key = `${(rawColor||'').toLowerCase()}|${(rawSize||'').toLowerCase()}`;
       variantMatrix[key] = v.id;
+      priceByKey[key] = cents;
       
       if (rawColor && !colors.includes(rawColor)) colors.push(rawColor);
       if (rawSize && !sizes.includes(rawSize)) sizes.push(rawSize);
@@ -631,10 +651,16 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
 
     // Pick defaultColor: first variant's color that we have cover for; else first color; else null
     let defaultColor = null;
-    if (variants.length) {
-      const k = (variants[0].color || '').toLowerCase();
-      defaultColor = (coverByColor[k] ? variants[0].color : (colors[0] || null));
-    }
+    // choose color with most views; tie-break alphabetically
+    const colorScores = colors.map(c => {
+      const key = String(c||'').toLowerCase();
+      const g = galleryByColor[key]?.views || {};
+      const score = ['front','back','left','right','left-front','right-front'].reduce((n,k2)=> n + (g[k2]?1:0), 0);
+      return { c, score };
+    });
+    colorScores.sort((a,b)=> (b.score - a.score) || String(a.c).localeCompare(String(b.c)) );
+    defaultColor = colorScores[0] ? colorScores[0].c : (colors[0] || null);
+    const coverImage = coverByColor[String(defaultColor||'').toLowerCase()] || images[0] || null;
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
     res.json({
@@ -645,9 +671,10 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       options: { colors, sizes },
       variants,
       variantMatrix,
-      mockupsByColor,
-      coverByColor,
-      defaultColor
+      priceByKey,
+      galleryByColor,
+      defaultColor,
+      coverImage
     });
   } catch (e) {
     console.error('❌ /api/printful-product error:', e.message);
