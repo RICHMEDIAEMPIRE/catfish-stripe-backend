@@ -642,6 +642,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       const s = String(u).toLowerCase();
       return s.includes('printfile') || s.includes('design');
     };
+    const isHidden = (u, hiddenSet) => hiddenSet && hiddenSet.has(String(u));
     const globalImagesSet = new Set();
     const mockupsByColor = {};
     const coverByColor = {};
@@ -753,6 +754,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         .limit(1);
       const override = Array.isArray(overrideRows) ? overrideRows[0] : null;
       if (override) {
+        const hiddenAll = new Set();
         // jsonb structure: custom_mockups { colorLower: { views, images } }, hidden_mockups { colorLower: [urls] }
         if (override.custom_mockups && typeof override.custom_mockups === 'object') {
           for (const colorKey of Object.keys(override.custom_mockups)) {
@@ -771,16 +773,36 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             galleryByColor[colorKey] = dst;
           }
         }
-        if (override.hidden_mockups && typeof override.hidden_mockups === 'object') {
+        // Hidden mockups can be either an object { color:[urls] } or a flat array of urls
+        if (Array.isArray(override.hidden_mockups)) {
+          const hidAll = new Set((override.hidden_mockups || []).map(String));
+          hidAll.forEach(u => hiddenAll.add(String(u)));
+          for (const colorKey of Object.keys(galleryByColor)) {
+            const g = galleryByColor[colorKey];
+            g.images = (g.images||[]).filter(u => !hidAll.has(String(u)));
+            const views = g.views || {};
+            for (const vKey of Object.keys(views)) {
+              if (hidAll.has(String(views[vKey]))) views[vKey] = null;
+            }
+            g.views = views;
+            galleryByColor[colorKey] = g;
+          }
+        } else if (override.hidden_mockups && typeof override.hidden_mockups === 'object') {
           for (const colorKey of Object.keys(override.hidden_mockups)) {
             const hid = new Set((override.hidden_mockups[colorKey] || []).map(String));
+            hid.forEach(u => hiddenAll.add(String(u)));
             if (galleryByColor[colorKey]) {
               galleryByColor[colorKey].images = (galleryByColor[colorKey].images||[]).filter(u => !hid.has(u));
               for (const vKey of Object.keys(galleryByColor[colorKey].views||{})) {
-                if (hid.has(galleryByColor[colorKey].views[vKey])) galleryByColor[colorKey].views[vKey] = null;
+                if (hid.has(String(galleryByColor[colorKey].views[vKey]))) galleryByColor[colorKey].views[vKey] = null;
               }
             }
           }
+        }
+
+        // Also filter top-level images fallback by any hidden URLs
+        if (hiddenAll.size) {
+          images = (images || []).filter(u => !hiddenAll.has(String(u)));
         }
         // Merge color-aware overrides
         if (override.custom_by_color && typeof override.custom_by_color === 'object') {
