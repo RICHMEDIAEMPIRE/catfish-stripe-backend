@@ -1022,26 +1022,16 @@ app.post("/create-checkout-session", async (req, res) => {
       }
     }
 
-    const onlyPrintful = items.every((it) => it.type === 'printful');
-    const shippingOptions = onlyPrintful
-      ? [
-          {
-            shipping_rate_data: {
-              type: "fixed_amount",
-              fixed_amount: { amount: 0, currency: "usd" },
-              display_name: "Free Shipping",
-            },
-          },
-        ]
-      : [
-          {
-            shipping_rate_data: {
-              type: "fixed_amount",
-              fixed_amount: { amount: 599, currency: "usd" },
-              display_name: "Flat Rate Shipping",
-            },
-          },
-        ];
+    // Flat shipping rate for all orders
+    const shippingOptions = [
+      {
+        shipping_rate_data: {
+          type: "fixed_amount",
+          fixed_amount: { amount: 599, currency: "usd" },
+          display_name: "Flat Rate Shipping",
+        },
+      },
+    ];
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ["card"],
