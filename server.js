@@ -348,7 +348,10 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           thumb: (p.thumbnail_url || d?.result?.sync_product?.thumbnail_url || ''), 
           priceMinCents: minCents, 
           currency: 'USD', 
-          hasVariants: true 
+          hasVariants: true,
+          // compat fields for older frontends
+          image: (p.thumbnail_url || d?.result?.sync_product?.thumbnail_url || ''),
+          price: (minCents != null) ? (minCents / 100) : null
         });
         
         // Rate limiting
@@ -361,7 +364,10 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           thumb: p.thumbnail_url || '', 
           priceMinCents: null, 
           currency: null, 
-          hasVariants: true 
+          hasVariants: true,
+          // compat fields for older frontends
+          image: p.thumbnail_url || '',
+          price: null
         });
       }
     }
