@@ -61,6 +61,7 @@ const transporter = nodemailer.createTransport({
 const allowedOrigins = [
   process.env.CLIENT_URL,
   'https://www.catfishempire.com',
+  'https://catfishempire.com',
   'https://test1243.netlify.app'
 ].filter(Boolean);
 
