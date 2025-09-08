@@ -57,6 +57,21 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
 });
 
+// ===== SUPABASE STORAGE HELPERS (mockups) =====
+async function uploadMockupToSupabase({ productId, color, view, filename, contentType, buffer }) {
+  const safeView = (view || 'other').toLowerCase();
+  const path = `printful/${String(productId)}/${String(color).toLowerCase()}/${safeView}/${filename}`;
+  const { error } = await supabase.storage.from('mockups').upload(path, buffer, { contentType: contentType || 'image/webp', upsert: true });
+  if (error) throw error;
+  const { data: pub } = supabase.storage.from('mockups').getPublicUrl(path);
+  return { url: pub.publicUrl, path };
+}
+
+async function removeMockupFromSupabase(path) {
+  const { error } = await supabase.storage.from('mockups').remove([path]);
+  if (error) throw error;
+}
+
 // ===== SESSION & CORS =====
 const allowedOrigins = [
   process.env.CLIENT_URL,
@@ -628,13 +643,34 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         .limit(1);
       const override = Array.isArray(overrideRows) ? overrideRows[0] : null;
       if (override) {
-        if (Array.isArray(override.hidden_mockups)) {
-          const hidden = new Set(override.hidden_mockups.map(String));
-          images = images.filter(u => !hidden.has(String(u)));
+        // jsonb structure: custom_mockups { colorLower: { views, images } }, hidden_mockups { colorLower: [urls] }
+        if (override.custom_mockups && typeof override.custom_mockups === 'object') {
+          for (const colorKey of Object.keys(override.custom_mockups)) {
+            const oc = override.custom_mockups[colorKey] || {};
+            const dst = galleryByColor[colorKey] || { views:{}, images:[] };
+            if (oc.views) {
+              for (const vKey of Object.keys(oc.views)) {
+                if (oc.views[vKey]) dst.views[vKey] = oc.views[vKey];
+              }
+            }
+            if (Array.isArray(oc.images)) {
+              const set = new Set(dst.images);
+              oc.images.forEach(u => { if (u) set.add(u); });
+              dst.images = Array.from(set);
+            }
+            galleryByColor[colorKey] = dst;
+          }
         }
-        if (Array.isArray(override.custom_mockups)) {
-          const set = new Set(images.map(String));
-          override.custom_mockups.forEach(u => { if (u && !set.has(String(u))) images.unshift(String(u)); });
+        if (override.hidden_mockups && typeof override.hidden_mockups === 'object') {
+          for (const colorKey of Object.keys(override.hidden_mockups)) {
+            const hid = new Set((override.hidden_mockups[colorKey] || []).map(String));
+            if (galleryByColor[colorKey]) {
+              galleryByColor[colorKey].images = (galleryByColor[colorKey].images||[]).filter(u => !hid.has(u));
+              for (const vKey of Object.keys(galleryByColor[colorKey].views||{})) {
+                if (hid.has(galleryByColor[colorKey].views[vKey])) galleryByColor[colorKey].views[vKey] = null;
+              }
+            }
+          }
         }
         if (override.title_override) {
           sp.name = override.title_override;
@@ -773,6 +809,57 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
+// Admin: upload mockup via base64
+app.post('/admin/mockups/upload', async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { productId, color, view, filename, contentType, base64 } = req.body || {};
+    if (!productId || !color || !filename || !base64) return res.status(400).json({ error: 'Missing fields' });
+    const buffer = Buffer.from(String(base64).split(',').pop(), 'base64');
+    const saved = await uploadMockupToSupabase({ productId, color, view: (view||'').toLowerCase(), filename, contentType: contentType || 'image/webp', buffer });
+    const colorKey = String(color).toLowerCase();
+    const { data: existing } = await supabase.from('product_overrides').select('*').eq('product_id', productId).maybeSingle();
+    const cm = existing?.custom_mockups || {};
+    cm[colorKey] = cm[colorKey] || { views: {}, images: [] };
+    if (view && !cm[colorKey].views?.[view]) {
+      cm[colorKey].views[view] = saved.url;
+    }
+    if (!cm[colorKey].images.includes(saved.url)) cm[colorKey].images.push(saved.url);
+    const upsert = { product_id: productId, custom_mockups: cm };
+    const { error: upErr } = await supabase.from('product_overrides').upsert(upsert);
+    if (upErr) throw upErr;
+    res.json({ ok: true, url: saved.url, path: saved.path });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Admin: delete mockup
+app.post('/admin/mockups/delete', async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { productId, color, url, path } = req.body || {};
+    if (!productId || !color || !url) return res.status(400).json({ error: 'Missing fields' });
+    const colorKey = String(color).toLowerCase();
+    const { data: existing } = await supabase.from('product_overrides').select('*').eq('product_id', productId).maybeSingle();
+    const cm = existing?.custom_mockups || {};
+    if (cm[colorKey]) {
+      cm[colorKey].images = (cm[colorKey].images || []).filter(u => u !== url);
+      cm[colorKey].views = cm[colorKey].views || {};
+      for (const k of Object.keys(cm[colorKey].views)) {
+        if (cm[colorKey].views[k] === url) cm[colorKey].views[k] = null;
+      }
+    }
+    const upsert = { product_id: productId, custom_mockups: cm };
+    const { error: upErr } = await supabase.from('product_overrides').upsert(upsert);
+    if (upErr) throw upErr;
+    if (path) { try { await removeMockupFromSupabase(path); } catch(_){} }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Persist drag-and-drop product ordering
 app.post('/admin/product-sort', async (req, res) => {
   try {
@@ -850,44 +937,54 @@ app.post("/create-checkout-session", async (req, res) => {
     const line_items = [];
     for (const item of items) {
       if (item.type === 'printful') {
-        // Ensure we have a variantId; if missing, infer a default from product details
         let variantId = item.variantId || item.variant_id;
-        let inferred = false;
-        let v;
-        if (!variantId) {
+        let priceInCents = Math.round((item.price || 0) * 100);
+        let name = item.name || 'Catfish Empire Product';
+        let image = item.image || '';
+
+        // Reconstruct variant if missing
+        if (!variantId && item.productId && item.color && item.size) {
           try {
-            const full = await getPrintfulProductDetailCached(item.productId || item.id, process.env.PRINTFUL_API_KEY);
-            const svs = full?.result?.sync_variants || [];
-            const priced = svs
-              .map(sv => ({ sv, cents: Math.round(parseFloat(sv.retail_price || sv.price || '0') * 100) }))
-              .filter(x => isFinite(x.cents) && x.cents > 0)
-              .sort((a,b)=>a.cents-b.cents);
-            if (!priced.length) throw new Error('No priced variants');
-            variantId = priced[0].sv.id;
-            v = { 
-              price: priced[0].sv.retail_price || priced[0].sv.price,
-              name: priced[0].sv.name,
-              image_url: (priced[0].sv.files||[]).find(f=>f.preview_url)?.preview_url || null
-            };
-            inferred = true;
-            console.log('🧩 Inferred Printful variant for checkout:', variantId);
+            const full = await getPrintfulProductDetailCached(item.productId, process.env.PRINTFUL_API_KEY);
+            const d = full?.result || {};
+            const key = `${String(item.color).toLowerCase()}|${String(item.size).toLowerCase()}`;
+            variantId = (d.variantMatrix && d.variantMatrix[key]) || (full.variantMatrix && full.variantMatrix[key]);
+            const pbk = (full.priceByKey || d.priceByKey || {});
+            if (pbk[key]) priceInCents = pbk[key];
+            const gbc = (full.galleryByColor || d.galleryByColor || {});
+            const col = gbc[String(item.color).toLowerCase()];
+            image = image || col?.views?.front || col?.images?.[0] || (d.images?.[0]) || image;
+            name = d.name || name;
           } catch (e) {
-            console.warn('⚠️ Could not infer variantId for Printful item:', e.message);
+            console.warn('Variant reconstruction failed:', e.message);
           }
         }
-        if (!v) {
-          // Fetch live variant details from Printful for server-side validation
-          v = await fetchPrintfulVariantDetails(variantId);
+
+        // Validate or enrich via variant fetch
+        if (variantId) {
+          try {
+            const v = await fetchPrintfulVariantDetails(variantId);
+            name = v.name || name;
+            image = v.image_url || image;
+            if (!priceInCents) priceInCents = Math.round((v.price || 0) * 100);
+          } catch (e) {
+            console.warn('Variant fetch failed, using provided price:', e.message);
+          }
         }
-        const priceInCents = Math.max(1, Math.round((v.price || 0) * 100));
+        if (!priceInCents || priceInCents < 50) {
+          return res.status(400).json({ error: "Printful variant price unavailable. Please reselect color/size." });
+        }
         line_items.push({
           price_data: {
-            currency: 'usd',
+            currency: (item.currency || 'USD').toLowerCase(),
             product_data: {
-              name: v.name || item.name || 'Catfish Empire Product',
-              images: v.image_url ? [v.image_url] : (item.image ? [item.image] : []),
+              name,
+              images: image ? [image] : [],
               metadata: {
-                printful_variant_id: String(variantId || ''),
+                ...(variantId ? { printful_variant_id: String(variantId) } : {}),
+                product_id: String(item.productId || ''),
+                color: String(item.color || ''),
+                size: String(item.size || ''),
                 external_id: item.external_id ? String(item.external_id) : undefined
               }
             },
