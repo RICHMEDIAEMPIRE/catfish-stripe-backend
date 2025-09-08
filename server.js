@@ -472,7 +472,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     svs.forEach(v => {
       (v.files || []).forEach(f => { if (f.preview_url) imageUrlsSet.add(f.preview_url); });
     });
-    const images = Array.from(imageUrlsSet);
+    let images = Array.from(imageUrlsSet);
 
     // Helpers for parsing color/size
     const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -536,6 +536,36 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     colors.sort();
     sizes.sort();
     
+    // Apply per-product overrides from Supabase (if table exists)
+    try {
+      const { data: overrideRows } = await supabase
+        .from('product_overrides')
+        .select('*')
+        .eq('product_id', String(d.id || sp.id || prodId))
+        .limit(1);
+      const override = Array.isArray(overrideRows) ? overrideRows[0] : null;
+      if (override) {
+        if (Array.isArray(override.hidden_mockups)) {
+          const hidden = new Set(override.hidden_mockups.map(String));
+          images = images.filter(u => !hidden.has(String(u)));
+        }
+        if (Array.isArray(override.custom_mockups)) {
+          const set = new Set(images.map(String));
+          override.custom_mockups.forEach(u => { if (u && !set.has(String(u))) images.unshift(String(u)); });
+        }
+        if (override.title_override) {
+          sp.name = override.title_override;
+        }
+        if (override.description_override) {
+          sp.description = override.description_override;
+        }
+        // price_override_cents could be applied to display in UI if needed
+      }
+    } catch (e) {
+      // Likely table missing; ignore silently
+      console.warn('product_overrides not applied:', e.message);
+    }
+
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
     res.json({
@@ -642,6 +672,49 @@ app.post("/inventory", async (req, res) => {
   await updateQuantity(color, qtyInt);
   inventory[color] = qtyInt;
   res.json({ success: true });
+});
+
+// ===== PRODUCT OVERRIDES (Admin) =====
+// GET existing override by product id
+app.get('/admin/product-override/:id', async (req, res) => {
+  try {
+    if (!req.session.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const pid = String(req.params.id);
+    const { data, error } = await supabase
+      .from('product_overrides')
+      .select('*')
+      .eq('product_id', pid)
+      .limit(1);
+    if (error) throw error;
+    res.json(Array.isArray(data) ? (data[0] || {}) : {});
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// UPSERT override
+app.post('/admin/product-override/:id', async (req, res) => {
+  try {
+    if (!req.session.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const pid = String(req.params.id);
+    const body = req.body || {};
+    const row = {
+      product_id: pid,
+      title_override: body.title_override || null,
+      description_override: body.description_override || null,
+      custom_mockups: Array.isArray(body.custom_mockups) ? body.custom_mockups : [],
+      hidden_mockups: Array.isArray(body.hidden_mockups) ? body.hidden_mockups : []
+    };
+    const { data, error } = await supabase
+      .from('product_overrides')
+      .upsert(row, { onConflict: 'product_id' })
+      .select()
+      .limit(1);
+    if (error) throw error;
+    res.json({ success: true, row: Array.isArray(data) ? data[0] : data });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ===== STRIPE CHECKOUT =====
