@@ -493,6 +493,23 @@ app.get('/api/printful/variant/:variantId', cors(), async (req, res) => {
   }
 });
 
+// Printful Catalog variant cache (color/size metadata)
+async function getCatalogVariant(variantId) {
+  const TTL = 60 * 60 * 1000;
+  if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {}, catalogVariantById: {} };
+  if (!global.pfCache.catalogVariantById) global.pfCache.catalogVariantById = {};
+  const key = String(variantId);
+  const cached = global.pfCache.catalogVariantById[key];
+  if (cached && Date.now() - cached.ts < TTL) return cached.data;
+  const token = process.env.PRINTFUL_API_KEY;
+  const base = `https://api.printful.com/products/variant/${encodeURIComponent(variantId)}`;
+  const resp = await fetch(base, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'Catfish-Empire/1.0' } });
+  const json = await resp.json().catch(()=>({}));
+  if (!resp.ok || json.code !== 200) throw new Error(`catalog variant ${variantId} failed ${resp.status}`);
+  global.pfCache.catalogVariantById[key] = { data: json.result, ts: Date.now() };
+  return json.result;
+}
+
 // GET /api/printful-product/:id → detail { id, name, description, images[], options:{colors[],sizes[]}, variants:[{id,color,size,priceCents,image}], variantMatrix{'color|size':variantId} }
 app.get('/api/printful-product/:id', cors(), async (req, res) => {
   try {
