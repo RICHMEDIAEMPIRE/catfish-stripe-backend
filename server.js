@@ -343,15 +343,29 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           }
         }
         
+        // choose a default color cover if possible
+        const sv0 = variants?.[0];
+        const sp0 = d?.result?.sync_product || {};
+        let thumb = p.thumbnail_url || sp0.thumbnail_url || '';
+        let defaultColor = null;
+        if (sv0) {
+          const name = String(sv0?.name || '');
+          const colorGuess = name.split(/[\/-]/)[0].trim();
+          defaultColor = colorGuess || null;
+          const files = sv0?.files || [];
+          const front = files.find(f => (f.preview_url||'').toLowerCase().includes('front'));
+          if (front?.preview_url) thumb = front.preview_url;
+        }
         cards.push({ 
           id: p.id, 
           name: (d?.result?.sync_product?.name) || p.name || 'Product', 
-          thumb: (p.thumbnail_url || d?.result?.sync_product?.thumbnail_url || ''), 
+          thumb, 
           priceMinCents: minCents, 
           currency: 'USD', 
           hasVariants: true,
-          // compat fields for older frontends
-          image: (p.thumbnail_url || d?.result?.sync_product?.thumbnail_url || ''),
+          defaultColor,
+          // compat
+          image: thumb,
           price: (minCents != null) ? (minCents / 100) : null
         });
         
@@ -479,16 +493,49 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const sp = d.sync_product || {};
     const svs = Array.isArray(d.sync_variants) ? d.sync_variants : (d.variants || []);
 
-    // Build gallery from all unique preview_url from sync_product.files and sync_variant.files, plus thumbnail_url
-    const imageUrlsSet = new Set();
-    if (sp.thumbnail_url) imageUrlsSet.add(sp.thumbnail_url);
-    if (Array.isArray(sp.files)) {
-      sp.files.forEach(f => { if (f.preview_url) imageUrlsSet.add(f.preview_url); });
+    // --- Build images, grouped by color & view ---
+    function viewFromUrl(u='') {
+      const s = String(u).toLowerCase();
+      if (s.includes('back')) return 'back';
+      if (s.includes('left-front')) return 'left-front';
+      if (s.includes('right-front')) return 'right-front';
+      if (s.includes('left')) return 'left';
+      if (s.includes('right')) return 'right';
+      if (s.includes('front')) return 'front';
+      return 'other';
     }
-    svs.forEach(v => {
-      (v.files || []).forEach(f => { if (f.preview_url) imageUrlsSet.add(f.preview_url); });
+    const isDesign = (u='') => {
+      const s = String(u).toLowerCase();
+      return s.includes('printfile') || s.includes('design');
+    };
+    const globalImagesSet = new Set();
+    const mockupsByColor = {};
+    const coverByColor = {};
+    const viewOrder = ['front','back','left-front','right-front','left','right','other'];
+    if (Array.isArray(sp.files)) {
+      sp.files.forEach(f => { if (f?.preview_url && !isDesign(f.preview_url)) globalImagesSet.add(f.preview_url); });
+    }
+    for (const v of svs) {
+      const { color } = parseColorSize(v);
+      const colorKey = (color || '').toLowerCase();
+      const files = Array.isArray(v.files) ? v.files : [];
+      for (const f of files) {
+        const url = f?.preview_url;
+        if (!url || isDesign(url)) continue;
+        const view = viewFromUrl(url);
+        globalImagesSet.add(url);
+        if (!mockupsByColor[colorKey]) mockupsByColor[colorKey] = [];
+        if (!mockupsByColor[colorKey].some(m => m.url === url)) {
+          mockupsByColor[colorKey].push({ url, view });
+        }
+      }
+    }
+    Object.keys(mockupsByColor).forEach(colorKey => {
+      mockupsByColor[colorKey].sort((a,b) => viewOrder.indexOf(a.view) - viewOrder.indexOf(b.view));
+      const front = mockupsByColor[colorKey].find(m => m.view === 'front');
+      coverByColor[colorKey] = (front?.url) || (mockupsByColor[colorKey][0]?.url) || null;
     });
-    let images = Array.from(imageUrlsSet);
+    let images = Array.from(globalImagesSet);
 
     // Helpers for parsing color/size
     const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -582,6 +629,12 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       console.warn('product_overrides not applied:', e.message);
     }
 
+    // Pick defaultColor: first variant's color that we have cover for; else first color; else null
+    let defaultColor = null;
+    if (variants.length) {
+      const k = (variants[0].color || '').toLowerCase();
+      defaultColor = (coverByColor[k] ? variants[0].color : (colors[0] || null));
+    }
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
     res.json({
@@ -591,7 +644,10 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       images,
       options: { colors, sizes },
       variants,
-      variantMatrix
+      variantMatrix,
+      mockupsByColor,
+      coverByColor,
+      defaultColor
     });
   } catch (e) {
     console.error('❌ /api/printful-product error:', e.message);
