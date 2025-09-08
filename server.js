@@ -175,6 +175,97 @@ async function fetchPrintfulVariantDetails(variantId) {
   return { id: Number(variantId), name, price, image_url, color, size };
 }
 
+// Resolve a Printful variant and price from productId + color + size
+async function resolveVariantByProductColorSize(productId, color, size) {
+  try {
+    const token = process.env.PRINTFUL_API_KEY;
+    const detail = await getPrintfulProductDetailCached(productId, token);
+    const d = detail?.result || {};
+    const svs = Array.isArray(d.sync_variants) ? d.sync_variants : (d.variants || []);
+    const wantedColor = String(color || '').toLowerCase();
+    const wantedSize = String(size || '').toLowerCase();
+    const SIZE_LIST = ['xs','s','m','l','xl','2xl','3xl','4xl','5xl'];
+    let chosen = null;
+    for (const v of svs) {
+      const vColor = String(v.color || v.product_color || '').toLowerCase();
+      const vSize  = String(v.size  || v.product_size  || '').toLowerCase();
+      const name = String(v.name || '');
+      const tokens = name.split(/[\/-]/).map(t => t.trim().toLowerCase());
+      const parsedSize = vSize || tokens.find(t => SIZE_LIST.includes(t)) || '';
+      const parsedColor = vColor || tokens.find(t => t !== parsedSize) || '';
+      if (parsedColor === wantedColor && parsedSize === wantedSize) { chosen = v; break; }
+    }
+    if (!chosen) return { variantId: null, priceCents: null, image: null };
+    const cents = Math.round(parseFloat(chosen.retail_price || chosen.price || '0') * 100) || 0;
+    const file = (chosen.files || []).find(f => f.preview_url) || {};
+    return { variantId: chosen.id, priceCents: cents, image: file.preview_url || null };
+  } catch (e) {
+    return { variantId: null, priceCents: null, image: null };
+  }
+}
+
+// Sanitize a client printful item to safe server representation
+async function coercePrintfulCartItem(item) {
+  let variantId = item.variantId || item.variant_id || null;
+  let priceCents = Number.isFinite(item?.priceCents) ? Number(item.priceCents) : null;
+  let imageUrl = item.image || null;
+  if ((!variantId || !priceCents) && item.productId && (item.color||item.size)) {
+    const resolved = await resolveVariantByProductColorSize(item.productId, item.color, item.size);
+    if (resolved?.variantId) variantId = resolved.variantId;
+    if (resolved?.priceCents) priceCents = resolved.priceCents;
+    if (!imageUrl && resolved?.image) imageUrl = resolved.image;
+  }
+  if (variantId && (!priceCents || priceCents <= 0)) {
+    try {
+      const v = await fetchPrintfulVariantDetails(variantId);
+      priceCents = Math.round((v.price || 0) * 100);
+      if (!imageUrl && v.image_url) imageUrl = v.image_url;
+    } catch {}
+  }
+  if (!variantId || !priceCents || priceCents <= 0) throw new Error('Missing Printful variantId or priceCents');
+  return {
+    name: item.name || 'Catfish Empire Product',
+    variantId,
+    priceCents,
+    currency: (item.currency || 'USD').toLowerCase(),
+    quantity: Number(item.qty || 1),
+    imageUrl,
+    productId: item.productId,
+    color: item.color || null,
+    size: item.size || null,
+  };
+}
+
+// Create a Printful draft order (non-blocking)
+async function createPrintfulDraftOrder(recipient, pfItems) {
+  try {
+    const storeId = process.env.PRINTFUL_STORE_ID;
+    const url = storeId ? `https://api.printful.com/orders?store_id=${encodeURIComponent(storeId)}` : `https://api.printful.com/orders`;
+    const body = {
+      recipient: {
+        name: recipient.name,
+        address1: recipient.line1,
+        address2: recipient.line2 || '',
+        city: recipient.city,
+        state_code: recipient.state,
+        country_code: recipient.country || 'US',
+        zip: recipient.postal_code,
+        email: recipient.email || undefined
+      },
+      items: pfItems.map(it => ({ quantity: it.quantity, variant_id: it.variantId, name: it.name })),
+      confirm: false
+    };
+    const resp = await fetch(url, { method: 'POST', headers: { Authorization: getPrintfulAuthHeader(), 'Content-Type': 'application/json', 'User-Agent': 'Catfish Empire Server' }, body: JSON.stringify(body) });
+    const json = await resp.json().catch(()=>({}));
+    if (!resp.ok) { console.error('Printful order create failed:', resp.status, json); return { ok:false, json }; }
+    console.log('✅ Printful draft order created:', json?.result?.id || json);
+    return { ok:true, json };
+  } catch (e) {
+    console.error('Printful draft order error:', e.message);
+    return { ok:false, error:e.message };
+  }
+}
+
 // GET /auth/printful/login → redirect user to Printful OAuth consent
 app.get('/auth/printful/login', (req, res) => {
   try {
@@ -379,7 +470,7 @@ app.get("/api/printful-products", cors(), async (req, res) => {
           const galleryGuess = svsDetail?.[0]?.files || [];
           const front2 = galleryGuess.find(f => (f.preview_url||'').toLowerCase().includes('front'));
           if (front2?.preview_url) thumb = front2.preview_url;
-        } catch {}
+          } catch {}
         cards.push({ 
           id: p.id, 
           name: (d?.result?.sync_product?.name) || p.name || 'Product', 
@@ -488,7 +579,7 @@ app.get('/api/printful/variant/:variantId', cors(), async (req, res) => {
     
     if (!bypass) global.pfCache.variantById[variantId] = { data, ts: Date.now() };
     res.json(data);
-  } catch (e) {
+      } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -697,7 +788,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         }
         // price_override_cents could be applied to display in UI if needed
       }
-    } catch (e) {
+  } catch (e) {
       // Likely table missing; ignore silently
       console.warn('product_overrides not applied:', e.message);
     }
@@ -1012,25 +1103,25 @@ app.post("/create-checkout-session", async (req, res) => {
       } else {
         // Sunglasses product - use existing hardcoded pricing
         line_items.push({
-          price_data: {
-            currency: "usd",
-            product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-            unit_amount: 1499,
-          },
-          quantity: item.qty,
+        price_data: {
+          currency: "usd",
+          product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
+          unit_amount: 1499,
+        },
+        quantity: item.qty,
         });
       }
     }
 
     // Flat shipping rate for all orders
     const shippingOptions = [
-      {
-        shipping_rate_data: {
-          type: "fixed_amount",
-          fixed_amount: { amount: 599, currency: "usd" },
-          display_name: "Flat Rate Shipping",
+        {
+          shipping_rate_data: {
+            type: "fixed_amount",
+            fixed_amount: { amount: 599, currency: "usd" },
+            display_name: "Flat Rate Shipping",
+          },
         },
-      },
     ];
 
     const session = await stripe.checkout.sessions.create({
@@ -1086,10 +1177,16 @@ app.post("/webhook", async (req, res) => {
       session.customer_email || session.customer_details?.email || "Unknown email";
 
     let updated = [];
+    const printfulLineItems = [];
     for (const item of items) {
       if (item.type === 'printful') {
-        // Printful products - just log for notification
-        updated.push(`${item.qty} × ${item.name} (Printful) - $${item.price}`);
+        try {
+          const safe = await coercePrintfulCartItem(item);
+          printfulLineItems.push(safe);
+          updated.push(`${safe.quantity} × ${safe.name} (Printful) - $${(safe.priceCents/100).toFixed(2)}`);
+        } catch (e) {
+          console.error('Coerce printful item failed in webhook:', e.message);
+        }
       } else if (inventory[item.color] !== undefined) {
         // Sunglasses products - update inventory
         inventory[item.color] -= item.qty;
@@ -1130,6 +1227,14 @@ ${updated.join("\n")}
         else console.log("📨 Order email sent");
       }
     );
+
+    // Attempt to create a Printful draft order
+    try {
+      if (printfulLineItems.length && shipping && shippingName) {
+        const recipient = { name: shippingName, line1: shipping.line1 || '', line2: shipping.line2 || '', city: shipping.city || '', state: shipping.state || '', postal_code: shipping.postal_code || '', country: shipping.country || 'US', email };
+        await createPrintfulDraftOrder(recipient, printfulLineItems);
+      }
+    } catch (e) { console.error('Printful draft order attempt failed:', e.message); }
 
     console.log("✅ Inventory updated from payment");
   }
