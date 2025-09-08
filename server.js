@@ -373,6 +373,22 @@ app.get("/api/printful-products", cors(), async (req, res) => {
       }
     }
 
+    // Apply custom sort order if defined in Supabase
+    try {
+      const ids = cards.map(c => String(c.id));
+      const { data: sorts } = await supabase
+        .from('product_sort')
+        .select('product_id, sort_index')
+        .in('product_id', ids);
+      if (Array.isArray(sorts) && sorts.length) {
+        const idx = new Map();
+        sorts.forEach(r => idx.set(String(r.product_id), Number(r.sort_index) || 0));
+        cards.sort((a,b) => (idx.get(String(a.id)) ?? 1e9) - (idx.get(String(b.id)) ?? 1e9));
+      }
+    } catch (e) {
+      // ignore sorting errors
+    }
+
     const payload = { products: cards, count: cards.length, timestamp: now };
     if (!bypass) global.pfCache.productsList = { data: payload, ts: now };
     res.json(payload);
@@ -672,6 +688,29 @@ app.post("/inventory", async (req, res) => {
   await updateQuantity(color, qtyInt);
   inventory[color] = qtyInt;
   res.json({ success: true });
+});
+
+// Persist drag-and-drop product ordering
+app.post('/admin/product-sort', async (req, res) => {
+  try {
+    if (!req.session.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { fromId, toId } = req.body || {};
+    if (!fromId || !toId) return res.status(400).json({ error: 'Missing ids' });
+    // naive: swap indices
+    const ids = [String(fromId), String(toId)];
+    const { data } = await supabase.from('product_sort').select('product_id, sort_index').in('product_id', ids);
+    const map = new Map();
+    (data||[]).forEach(r => map.set(String(r.product_id), Number(r.sort_index)||0));
+    const a = map.get(String(fromId)) ?? 0;
+    const b = map.get(String(toId)) ?? 0;
+    await supabase.from('product_sort').upsert([
+      { product_id: String(fromId), sort_index: b },
+      { product_id: String(toId), sort_index: a }
+    ], { onConflict: 'product_id' });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ===== PRODUCT OVERRIDES (Admin) =====
