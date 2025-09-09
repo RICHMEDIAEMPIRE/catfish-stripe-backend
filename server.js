@@ -756,11 +756,11 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     function viewFromUrl(u='') {
       const s = String(u).toLowerCase();
       if (s.includes('back')) return 'back';
-      if (s.includes('left-front')) return 'left-front';
-      if (s.includes('right-front')) return 'right-front';
-      if (s.includes('left')) return 'left';
-      if (s.includes('right')) return 'right';
-      if (s.includes('front')) return 'front';
+      if (s.includes('left-front') || s.includes('left_front') || s.includes('front-left') || s.includes('frontleft') || s.includes('leftfront')) return 'left-front';
+      if (s.includes('right-front') || s.includes('right_front') || s.includes('front-right') || s.includes('frontright') || s.includes('rightfront')) return 'right-front';
+      if (s.includes('sleeve_left') || s.includes('left-side') || s.includes('left_side') || s.includes('leftprofile') || s.includes('profile-left')) return 'left';
+      if (s.includes('sleeve_right') || s.includes('right-side') || s.includes('right_side') || s.includes('rightprofile') || s.includes('profile-right')) return 'right';
+      if (s.includes('front') || s.includes('default') || s.includes('preview')) return 'front';
       return 'other';
     }
     const isDesign = (u='') => {
