@@ -62,6 +62,51 @@ function normColor(c){ return String(c||'').trim().toLowerCase(); }
 function validView(v){ const s = String(v||'').toLowerCase(); return ['front','back','left','right'].includes(s) ? s : null; }
 function normUrl(u){ return String(u||'').replace(/^http:\/\//i,'https://'); }
 function uniqBy(arr, keyFn){ const m=new Map(); for(const it of (arr||[])){ const k=keyFn(it); if(!k) continue; if(!m.has(k)) m.set(k,it);} return Array.from(m.values()); }
+function uniq(arr){ return Array.from(new Set(arr||[])); }
+function safeUrl(u){ return String(u||'').replace(/^http:\/\//i,'https://'); }
+
+function parseColorSizeFromVariant(v){
+  const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+  const explicitColor = (v.color || v.product_color || '').trim();
+  const explicitSize  = (v.size  || v.product_size  || '').trim();
+  if (explicitColor || explicitSize) return { color: explicitColor, size: explicitSize };
+  const parts = String(v.name||'').split(/[\/\-]/).map(s=>s.trim());
+  const size = parts.find(p=>SIZE_LIST.includes(p.toUpperCase())) || '';
+  const color = parts.find(p=>p !== size) || '';
+  return { color, size };
+}
+
+// === Build color-aware gallery from variant files; map to angles before dedupe ===
+function buildGalleryByColor(syncVariants){
+  const byColor = {};
+  for (const v of (syncVariants||[])){
+    const { color } = parseColorSizeFromVariant(v);
+    const key = (color||'').toLowerCase().trim();
+    if (!key) continue;
+    if (!byColor[key]) byColor[key] = [];
+    for (const f of (v.files || [])){
+      byColor[key].push({ type: String(f.type||'').toLowerCase(), url: safeUrl(f.preview_url || f.thumbnail_url || '') });
+    }
+  }
+
+  const out = {};
+  for (const [colorKey, files] of Object.entries(byColor)){
+    const views = { front:null, back:null, left:null, right:null };
+    for (const f of files){
+      const t = f.type, u = f.url; if (!u) continue;
+      if (!views.front && (t==='front' || t==='default' || t==='preview')) views.front = u;
+      if (!views.back  && t==='back') views.back = u;
+      if (!views.left  && (t==='sleeve_left' || t==='left')) views.left = u;
+      if (!views.right && (t==='sleeve_right'|| t==='right')) views.right = u;
+    }
+    const seen = new Set();
+    const gallery = [];
+    for (const f of files){ const u=f.url; if (!u || seen.has(u)) continue; seen.add(u); gallery.push(u); }
+    const cover = views.front || views.back || views.left || views.right || gallery[0] || null;
+    out[colorKey] = { color: colorKey, views, images: gallery, cover };
+  }
+  return out;
+}
 async function uploadMockupToSupabase({ productId, color, view, filename, contentType, buffer }) {
   const safeView = (view || 'other').toLowerCase();
   const path = `printful/${String(productId)}/${String(color).toLowerCase()}/${safeView}/${filename}`;
@@ -981,12 +1026,9 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       const defViews = (defKey && galleryByColor[defKey]?.views) ? galleryByColor[defKey].views : {};
       for (const [cKey, g] of Object.entries(galleryByColor)) {
         const v = g.views || {};
-        for (const k of orderedAngleKeys) {
-          if (!v[k] && defViews && defViews[k]) {
-            v[k] = defViews[k];
-            if (!g.images.includes(defViews[k])) g.images.push(defViews[k]);
-          }
-        }
+        // Borrow only the canonical angles front/back/left/right
+        const borrowKeys = ['front','back','left','right'];
+        for (const k of borrowKeys) { if (!v[k] && defViews && defViews[k]) { v[k]=defViews[k]; if (!g.images.includes(defViews[k])) g.images.push(defViews[k]); } }
         g.views = v;
         galleryByColor[cKey] = g;
       }
