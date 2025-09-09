@@ -73,6 +73,41 @@ function applyTestDiscountIfAny(unitCents, promoCode) {
   return Math.max(discounted, TEST_MIN_CHARGE_CENTS);
 }
 
+// ====== Compact cart item metadata (avoid 500 char limits) ======
+// pack a single item into a tiny pipe-delimited string: t|pid|vid|q|c|s
+function packItem(it) {
+  const t = it.type === 'printful' ? 'p' : 's';
+  const pid = it.productId ?? it.product_id ?? '';
+  const vid = it.variantId ?? it.variant_id ?? '';
+  const q = it.qty ?? 1;
+  const c = String(it.color || '').replace(/\|/g,'').toLowerCase();
+  const s = String(it.size  || '').replace(/\|/g,'').toUpperCase();
+  return [t, pid, vid, q, c, s].join('|');
+}
+
+// unpack items from a session's metadata (new keys i0..iN, or legacy JSON)
+function unpackSessionItems(session) {
+  const md = session?.metadata || {};
+  const keys = Object.keys(md).filter(k => /^i\d+$/.test(k)).sort((a,b)=>Number(a.slice(1))-Number(b.slice(1)));
+  if (keys.length) {
+    return keys.map(k => {
+      const [t,pid,vid,q,c,s] = String(md[k]).split('|');
+      return {
+        type: t === 'p' ? 'printful' : 'sunglasses',
+        productId: pid ? Number(pid) : null,
+        variantId: vid ? Number(vid) : null,
+        qty: q ? Number(q) : 1,
+        color: c || null,
+        size: s || null
+      };
+    });
+  }
+  if (md.items) {
+    try { return JSON.parse(md.items); } catch { /* ignore */ }
+  }
+  return [];
+}
+
 // ===== PRINTFUL ORDER ENV FLAGS & LAST ORDER LOG =====
 // PRINTFUL_AUTO_FULFILL: if true and PRINTFUL_CONFIRM true, we attempt to confirm order
 // PRINTFUL_CONFIRM: if true and auto-fulfill true, order will be confirmed; otherwise draft
@@ -1645,14 +1680,19 @@ app.post("/create-checkout-session", async (req, res) => {
         },
     ];
 
+    // Build compact metadata
+    const metadata = {};
+    (items || []).forEach((it, idx) => { metadata[`i${idx}`] = packItem(it); });
+    metadata.cart_count = String(items ? items.length : 0);
+    if (shippingState) metadata.shippingState = String(shippingState);
+
     const sessionParams = {
       payment_method_types: ["card"],
       mode: "payment",
       customer_creation: "always",
       line_items,
       metadata: {
-        items: JSON.stringify(items),
-        shippingState: shippingState || "Unknown",
+        ...metadata,
         promo_code: promoCode || '',
         test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : '0'
       },
@@ -1725,7 +1765,8 @@ app.post("/webhook", async (req, res) => {
       return res.json({ received: true });
     }
 
-    const items = JSON.parse(session.metadata?.items || "[]");
+    const items = unpackSessionItems(session);
+    try { console.log('Decoded session items:', items.map(i => ({ t:i.type, pid:i.productId, vid:i.variantId, q:i.qty, c:i.color, s:i.size }))); } catch(_){}
     const shippingState = session.metadata?.shippingState || "Unknown";
 
     const shipping =
