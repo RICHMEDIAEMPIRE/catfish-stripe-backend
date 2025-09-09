@@ -1527,13 +1527,13 @@ app.get('/admin/printful/last', cors(), async (req, res) => {
   res.json({ ...LAST_PF_ORDER });
 });
 
-// Admin: fetch latest PF payload/response (compact)
+// Admin/Debug: token bypass to view last PF payload/response
+const DEBUG_TOKEN = process.env.ADMIN_DEBUG_TOKEN || '';
 app.get('/admin/printful/debug', cors(), async (req, res) => {
-  if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
-  res.json({
-    lastPayload: globalThis.__LAST_PF_PAYLOAD__ || null,
-    lastResponse: globalThis.__LAST_PF_RESPONSE__ || null
-  });
+  const okByToken = DEBUG_TOKEN && req.query.token === DEBUG_TOKEN;
+  const okBySession = !!(req.session?.authenticated) || req.session?.isAdmin === true;
+  if (!okByToken && !okBySession) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ lastPayload: globalThis.__LAST_PF_PAYLOAD__ || null, lastResponse: globalThis.__LAST_PF_RESPONSE__ || null });
 });
 
 // ===== ADMIN/DEBUG: Trigger a test PF order (draft) =====
@@ -1941,10 +1941,12 @@ ${pfLines ? `\n${pfLines}` : ''}
 
     // Attempt to create a Printful draft or confirmable order
     try {
-      // Retrieve full session with expands for shipping
+      // Retrieve session (shipping_details is not expandable)
       const sess = await stripe.checkout.sessions.retrieve(session.id, {
-        expand: ['customer', 'customer_details', 'shipping_details', 'payment_intent.shipping']
+        expand: ['payment_intent', 'customer', 'customer_details']
       });
+      // Fetch line items if needed for diagnostics or enrichment
+      try { await stripe.checkout.sessions.listLineItems(session.id, { expand: ['data.price.product'] }); } catch(_){ }
       const confirm = (process.env.PRINTFUL_CONFIRM === 'true' && process.env.PRINTFUL_AUTO_FULFILL === 'true');
       if (printfulLineItems.length) {
         await createPrintfulOrder({ session: sess, items: printfulLineItems, confirm });
