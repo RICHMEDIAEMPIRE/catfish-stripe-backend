@@ -784,9 +784,10 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         const url = normUrl(f?.preview_url);
         if (!url || isDesign(url) || isGloballyHidden(url)) continue;
         const view = viewFromUrl(url);
+        const ftype = String(f?.type||'').toLowerCase();
         globalImagesSet.add(url);
         if (!mockupsByColor[colorKey]) mockupsByColor[colorKey] = [];
-        if (!mockupsByColor[colorKey].some(m => m.url === url)) { mockupsByColor[colorKey].push({ url, view }); }
+        if (!mockupsByColor[colorKey].some(m => m.url === url)) { mockupsByColor[colorKey].push({ url, view, type: ftype }); }
       }
     }
     Object.keys(mockupsByColor).forEach(colorKey => {
@@ -795,9 +796,11 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       coverByColor[colorKey] = (front?.url) || (mockupsByColor[colorKey][0]?.url) || null;
       const views = {};
       for (const m of mockupsByColor[colorKey]) {
-        if (['front','back','left','right','left-front','right-front'].includes(m.view) && !views[m.view]) {
-          views[m.view] = m.url;
-        }
+        const t = String(m.type||'');
+        if (!views.front && (m.view==='front' || t==='front' || t==='default' || t==='preview')) views.front = m.url;
+        if (!views.back && (m.view==='back' || t==='back')) views.back = m.url;
+        if (!views.left && (m.view==='left' || t==='sleeve_left' || t==='left-front')) views.left = m.url;
+        if (!views.right && (m.view==='right' || t==='sleeve_right' || t==='right-front')) views.right = m.url;
       }
       const imagesList = uniqBy(mockupsByColor[colorKey].map(m => m.url), u=>u).map(u=>u);
       galleryByColor[colorKey] = { views: views, images: imagesList };
