@@ -204,7 +204,7 @@ async function buildPrintfulItems(decodedItems, token, storeId){
     const pid = i.pid || i.productId || i.id;
     const color = i.c || i.color; const size = i.s || i.size;
     const vid = await recoverVariantId({ vid:i.vid||i.variantId||i.variant_id, pid, c:color, s:size }, token, storeId);
-    if (vid) out.push({ variant_id: Number(vid), quantity: qty });
+    if (vid) out.push({ sync_variant_id: Number(vid), quantity: qty });
   }
   return out;
 }
@@ -1612,6 +1612,32 @@ app.get('/admin/printful/debug', cors(), async (req, res) => {
   });
 });
 
+// Quick debug endpoint to verify a store sync variant id
+app.get('/admin/printful/variant/:id', cors(), async (req, res) => {
+  try{
+    const DEBUG_TOKEN2 = process.env.ADMIN_DEBUG_TOKEN || '';
+    if (!(DEBUG_TOKEN2 && req.query.token === DEBUG_TOKEN2)) return res.status(401).json({error:'unauthorized'});
+
+    const id = String(req.params.id);
+    const storeId = process.env.PRINTFUL_STORE_ID;
+    const url = storeId
+      ? `https://api.printful.com/store/variants/${encodeURIComponent(id)}?store_id=${encodeURIComponent(storeId)}`
+      : `https://api.printful.com/store/variants/${encodeURIComponent(id)}`;
+
+    const r = await fetch(url, {
+      headers:{
+        'Authorization': `Bearer ${process.env.PRINTFUL_API_KEY}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      }
+    });
+    const text = await r.text();
+    res.status(r.status).send(text);
+  } catch(e){
+    res.status(500).json({error:String(e.message||e)});
+  }
+});
+
 // ===== ADMIN/DEBUG: Trigger a test PF order (draft) =====
 app.post('/admin/printful/test-order', cors(), async (req, res) => {
   try {
@@ -2028,7 +2054,9 @@ ${pfLines ? `\n${pfLines}` : ''}
       const decoded = items.map(x => ({ t: x.type || x.t, pid: Number(x.productId || x.pid || x.id || 0) || null, vid: Number(x.variantId || x.variant_id || x.vid || 0) || null, q: Number(x.qty || x.q || 1) || 1, c: x.color || x.c || '', s: x.size  || x.s || '' }));
       globalThis.__LAST_PF_DECODED__ = decoded;
       const pfItems = token ? await buildPrintfulItems(decoded, token, storeId) : [];
-      globalThis.__LAST_PF_ITEMS__ = pfItems;
+      // annotate for clarity in debug
+      const debugItems = pfItems.map(x => ({ ...x }));
+      globalThis.__LAST_PF_ITEMS__ = debugItems;
       if (token && pfItems.length){
         const recipient = stripeToPrintfulRecipient(sess);
         const incomplete = !recipient.address1 || !recipient.city || !recipient.state_code || !recipient.country_code || !recipient.zip;
