@@ -973,6 +973,24 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     colorScores.sort((a,b)=> (b.score - a.score) || String(a.c).localeCompare(String(b.c)) );
     defaultColor = colorScores[0] ? colorScores[0].c : (colors[0] || null);
     const coverImage = coverByColor[String(defaultColor||'').toLowerCase()] || images[0] || null;
+
+    // Ensure every color exposes all angle keys, borrowing from defaultColor when missing
+    try {
+      const orderedAngleKeys = ['front','left-front','right-front','left','right','back'];
+      const defKey = String(defaultColor||'').toLowerCase();
+      const defViews = (defKey && galleryByColor[defKey]?.views) ? galleryByColor[defKey].views : {};
+      for (const [cKey, g] of Object.entries(galleryByColor)) {
+        const v = g.views || {};
+        for (const k of orderedAngleKeys) {
+          if (!v[k] && defViews && defViews[k]) {
+            v[k] = defViews[k];
+            if (!g.images.includes(defViews[k])) g.images.push(defViews[k]);
+          }
+        }
+        g.views = v;
+        galleryByColor[cKey] = g;
+      }
+    } catch(_) {}
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
     res.json({
