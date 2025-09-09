@@ -71,7 +71,7 @@ function loadPromoMapFromEnv() {
   for (let i = 1; i <= 10; i++) {
     const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
     if (!raw) continue;
-    const m = String(raw).match(/^\(([^)]+)\)\s*(\d{1,2}|100)$/);
+    const m = String(raw).match(/^\s*\(([^)]+)\)\s*(\d{1,2}|100)\s*$/);
     if (!m) {
       console.warn(`Promo env code${i} is invalid. Expected (name)NN, got:`, raw);
       continue;
@@ -101,6 +101,23 @@ function priceAfterPromo(cents, promoPercent){
   if (!promoPercent) return cents;
   const kept = Math.max(0, 100 - Number(promoPercent));
   return Math.max(0, Math.round((Number(cents) * kept) / 100));
+}
+
+// Case-insensitive parser returning array of { code, percent }
+function parseEnvPromos() {
+  const promos = [];
+  for (let i = 1; i <= 10; i++) {
+    const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
+    if (!raw) continue;
+    const m = String(raw).trim().match(/^\s*\(([^)]+)\)\s*(\d{1,2})\s*$/);
+    if (!m) continue;
+    const code = m[1].trim().toLowerCase();
+    const percent = parseInt(m[2], 10);
+    if (Number.isFinite(percent) && percent > 0 && percent <= 99) {
+      promos.push({ code, percent });
+    }
+  }
+  return promos;
 }
 
 // ===== Stripe → Printful recipient mapper =====
@@ -1532,6 +1549,19 @@ app.post('/api/promo/apply', cors(), express.json(), (req, res) => {
 app.post('/api/promo/clear', cors(), (_req, res) => {
   clearActivePromo(_req);
   res.json({ ok: true });
+});
+
+// Robust validator: parse env codes, case-insensitive, tolerant of spaces
+app.post('/api/promo/validate', cors(), express.json(), (req, res) => {
+  try {
+    const input = String(req.body?.code || '').trim().toLowerCase();
+    const promos = parseEnvPromos();
+    const found = promos.find(p => p.code === input);
+    if (!found) return res.status(404).json({ ok:false });
+    return res.json({ ok:true, code: found.code, percent: found.percent, minCents: 50 });
+  } catch (e) {
+    return res.status(500).json({ ok:false });
+  }
 });
 
 // ===== DONATIONS: Create Stripe Checkout session =====
