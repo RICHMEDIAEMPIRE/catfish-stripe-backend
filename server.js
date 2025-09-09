@@ -1,6 +1,7 @@
 // ===== ENV & CORE =====
 require("dotenv").config();
 const express = require("express");
+const crypto = require('crypto');
 const cors = require("cors");
 const session = require("express-session");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -471,6 +472,27 @@ function withStoreId(baseUrl) {
   return `${baseUrl}${separator}store_id=${encodeURIComponent(storeId)}`;
 }
 
+// Centralized Printful POST with optional store_id and logging
+async function pfPost(path, body) {
+  const base = 'https://api.printful.com';
+  const storeId = process.env.PRINTFUL_STORE_ID && String(process.env.PRINTFUL_STORE_ID).trim();
+  const url = storeId ? `${base}${path}?store_id=${encodeURIComponent(storeId)}` : `${base}${path}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: getPrintfulAuthHeader(),
+      'Content-Type': 'application/json',
+      'User-Agent': 'Catfish Empire Server'
+    },
+    body: JSON.stringify(body)
+  });
+  const text = await resp.text();
+  return { status: resp.status, ok: resp.ok, text };
+}
+
+if (!global.__pfDebug) global.__pfDebug = { lastPayload:null, lastResponse:null };
+app.get('/admin/debug/printful-last', cors(), (_req, res) => res.json(global.__pfDebug));
+
 // ===================== DEBUG HELPERS (Printful) =====================
 // Ping Printful with auth header to verify token/permissions quickly
 app.get('/api/debug/ping-printful', cors(), async (req, res) => {
@@ -603,6 +625,12 @@ function getPrintfulAuthHeader() {
   // Prefer OAuth token if available, otherwise fall back to env token if set
   const token = printfulAccessToken || process.env.PRINTFUL_API_KEY || '';
   return `Bearer ${token}`;
+}
+
+// Deterministic short external_id for Printful (<=64 chars)
+function mkPfExternalId(stripeSessionId) {
+  return 'cs_' + crypto.createHash('sha1').update(String(stripeSessionId||''))
+    .digest('hex').slice(0,24);
 }
 
 // Fetch details for a specific Printful store variant (name, price, image, color, size)
@@ -2064,13 +2092,13 @@ ${pfLines ? `\n${pfLines}` : ''}
           console.warn('SKIP Printful: recipient incomplete', recipient);
           globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'Recipient incomplete', recipient };
         } else {
-          const body = { external_id: session.id, confirm:false, recipient, items: pfItems };
+          const external_id = mkPfExternalId(session.id || session.payment_intent || Date.now());
+          const body = { external_id, confirm:false, recipient, items: pfItems };
           globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body };
-          const url = storeId ? `https://api.printful.com/orders?store_id=${encodeURIComponent(storeId)}` : 'https://api.printful.com/orders';
-          const resp = await fetch(url, { method:'POST', headers:{ 'Authorization': `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
-          const text = await resp.text();
-          console.log('PRINTFUL ORDER RESPONSE', resp.status, text);
-          globalThis.__LAST_PF_RESPONSE__ = { status: resp.status, text };
+          const pfResp = await pfPost('/orders', body);
+          globalThis.__LAST_PF_RESPONSE__ = { status: pfResp.status, text: pfResp.text };
+          if (!pfResp.ok) console.error('Printful order create failed:', pfResp.status, pfResp.text);
+          else console.log('Printful order created (draft). Status:', pfResp.status);
         }
       } else {
         globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text: token ? 'No pfItems' : 'No PRINTFUL_API_KEY' };
