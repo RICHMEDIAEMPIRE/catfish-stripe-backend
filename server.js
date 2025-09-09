@@ -73,6 +73,43 @@ function applyTestDiscountIfAny(unitCents, promoCode) {
   return Math.max(discounted, TEST_MIN_CHARGE_CENTS);
 }
 
+// === Promo codes from env: code1=(name)15 ... code10 ===
+function getEnvPromoMap() {
+  const map = {};
+  for (let i = 1; i <= 10; i++) {
+    const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
+    if (!raw) continue;
+    const m = String(raw).match(/^\(([^)]+)\)\s*(\d{1,2}|100)$/);
+    if (!m) {
+      console.warn(`Promo env code${i} is invalid. Expected (name)NN, got:`, raw);
+      continue;
+    }
+    const code = m[1].trim().toLowerCase();
+    const percent = parseInt(m[2], 10);
+    if (percent >= 0 && percent <= 100) map[code] = percent;
+  }
+  return map;
+}
+function getActivePromo(req){ return req.session?.promo || null; }
+function setActivePromo(req, promo){ if (!req.session) req.session = {}; req.session.promo = promo; }
+function clearActivePromo(req){ if (req.session) req.session.promo = null; }
+
+function calcFlatShipping(lines){ return Array.isArray(lines) && lines.length ? 599 : 0; }
+function calcCartTotals(lines, promo){
+  const safe = Array.isArray(lines) ? lines : [];
+  const subCents = safe.reduce((s,l)=> s + (Number(l.priceCents||0) * Math.max(1, Number(l.qty||1))), 0);
+  let discountCents = 0;
+  if (promo && promo.percent){ discountCents = Math.floor(subCents * (promo.percent/100)); }
+  const shippingCents = calcFlatShipping(safe);
+  const totalCents = Math.max(0, subCents - discountCents) + shippingCents;
+  return { subCents, discountCents, shippingCents, totalCents };
+}
+function applyPercentPromo(unitCents, promo){
+  if (!promo || !promo.percent) return unitCents;
+  const discounted = Math.floor(Number(unitCents) * (1 - (promo.percent/100)));
+  return Math.max(TEST_MIN_CHARGE_CENTS, discounted);
+}
+
 // ====== Compact cart item metadata (avoid 500 char limits) ======
 // pack a single item into a tiny pipe-delimited string: t|pid|vid|q|c|s
 function packItem(it) {
@@ -1468,7 +1505,7 @@ app.post('/admin/printful/test-order', cors(), async (req, res) => {
     const { variantId, quantity, address } = req.body || {};
     const fakeSession = {
       id: `test_${Date.now()}`,
-      shipping: { name: 'Test User', address: {
+      shipping_details: { name: 'Test User', address: {
         line1: address?.line1 || '123 Test St',
         line2: address?.line2 || '',
         city: address?.city || 'Raleigh',
@@ -1618,6 +1655,7 @@ app.post("/create-checkout-session", async (req, res) => {
   try {
     // Create line items with dynamic pricing based on product type
     const line_items = [];
+    const activePromo = getActivePromo(req) || (promoCode ? { code: promoCode, percent: (getEnvPromoMap()[promoCode]||0) } : null);
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
@@ -1654,6 +1692,7 @@ app.post("/create-checkout-session", async (req, res) => {
             console.warn('Variant fetch failed, using provided price:', e.message);
           }
         }
+        priceInCents = applyPercentPromo(priceInCents, activePromo);
         priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
         if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
           return res.status(400).json({ error: `Printful variant price invalid for variant ${variantId || 'unknown'} (computed ${priceInCents}c).` });
@@ -1679,6 +1718,7 @@ app.post("/create-checkout-session", async (req, res) => {
       } else {
         // Sunglasses product - use existing hardcoded pricing
         let priceInCents = 1499;
+        priceInCents = applyPercentPromo(priceInCents, activePromo);
         priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
         line_items.push({
         price_data: {
@@ -1717,7 +1757,7 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         ...metadata,
         promo_code: promoCode || '',
-        test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : '0'
+        test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : String(activePromo?.percent || 0)
       },
       automatic_tax: { enabled: !isTestPromo },
       success_url: `${process.env.CLIENT_URL}/success.html`,
