@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Printful Mockups Debug</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
+    h1 { margin-bottom: 8px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .controls { display: flex; gap: 8px; margin: 10px 0 20px; }
+    input[type="text"]{ padding: 8px 10px; min-width: 260px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    .color-block { margin: 18px 0; }
+    .color-title { font-weight: 700; margin-bottom: 8px; }
+    .view-wrap { margin: 8px 0 16px; }
+    .view-title { font-weight: 600; margin: 6px 0; opacity: .8; }
+    .thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .thumb { width: 140px; height: 140px; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; background: #fafafa; display: flex; align-items: center; justify-content: center; }
+    .thumb img { max-width: 100%; max-height: 100%; display: block; }
+    .meta { font-size: 12px; opacity: .7; }
+    .err { color: #b00020; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Printful Mockups Debug</h1>
+  <div class="meta">Use this to verify which colors & angles (front/back/left/right) are coming from the API.</div>
+  <div class="controls">
+    <input id="pid" type="text" placeholder="Enter Printful product ID (e.g. 391909998)" />
+    <button id="load">Load</button>
+    <button id="clear">Clear API cache</button>
+  </div>
+  <div id="name" class="meta"></div>
+  <div id="cover" class="meta"></div>
+  <div id="out"></div>
+  <div id="err" class="err"></div>
+
+  <script>
+    const $ = sel => document.querySelector(sel);
+    const params = new URLSearchParams(location.search);
+    const startPid = params.get('product') || '';
+    if (startPid) $('#pid').value = startPid;
+
+    $('#load').addEventListener('click', load);
+    $('#clear').addEventListener('click', async () => {
+      try {
+        const res = await fetch('/debug/clear-store-cache', { method: 'POST' });
+        const j = await res.json();
+        alert(j.message || 'Cache cleared.');
+      } catch (e) {
+        alert('Clear cache failed: ' + e.message);
+      }
+    });
+
+    if (startPid) load();
+
+    async function load() {
+      $('#err').textContent = '';
+      $('#out').innerHTML = '';
+      $('#name').textContent = '';
+      $('#cover').textContent = '';
+
+      const pid = $('#pid').value.trim();
+      if (!pid) { $('#err').textContent = 'Enter a product ID'; return; }
+      history.replaceState(null, '', `?product=${encodeURIComponent(pid)}`);
+
+      try {
+        const res = await fetch(`/api/printful-product/${encodeURIComponent(pid)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(JSON.stringify(data));
+
+        $('#name').textContent = `Name: ${data.name || '(no name)'}`;
+        if (data.coverImage) {
+          $('#cover').innerHTML = `Cover Image: <a href="${data.coverImage}" target="_blank">${data.coverImage}</a>`;
+        }
+
+        if (data.galleryByColor && typeof data.galleryByColor === 'object') {
+          const out = $('#out');
+          const colors = Object.keys(data.galleryByColor).sort();
+          colors.forEach(colorKey => {
+            const block = document.createElement('div');
+            block.className = 'color-block';
+            const title = document.createElement('div');
+            title.className = 'color-title';
+            title.textContent = `Color: ${colorKey}`;
+            block.appendChild(title);
+
+            const entry = data.galleryByColor[colorKey] || {};
+            const views = entry.views || {};
+            const ordered = ['front','left-front','right-front','left','right','back'];
+            const viewNames = Object.keys(views).length ? ordered.filter(k=>views[k]).concat(Object.keys(views).filter(k=>!ordered.includes(k))) : ['images'];
+
+            viewNames.forEach(viewName => {
+              const wrap = document.createElement('div');
+              wrap.className = 'view-wrap';
+              const vt = document.createElement('div');
+              vt.className = 'view-title';
+              vt.textContent = `View: ${viewName}`;
+              wrap.appendChild(vt);
+
+              const imgs = Array.isArray(views[viewName]) ? views[viewName] : (Array.isArray(entry.images) ? entry.images : []);
+              const thumbs = document.createElement('div'); thumbs.className = 'thumbs';
+              imgs.forEach(u => {
+                const t = document.createElement('a');
+                t.href = u; t.target = '_blank'; t.className = 'thumb';
+                const img = document.createElement('img'); img.src = u;
+                t.appendChild(img); thumbs.appendChild(t);
+              });
+              if (!imgs.length) {
+                const none = document.createElement('div'); none.className = 'meta'; none.textContent = '(no images)';
+                wrap.appendChild(none);
+              } else {
+                wrap.appendChild(thumbs);
+              }
+              block.appendChild(wrap);
+            });
+            out.appendChild(block);
+          });
+        } else {
+          const out = $('#out');
+          const wrap = document.createElement('div'); wrap.className = 'thumbs';
+          (data.images || []).forEach(u => {
+            const a = document.createElement('a');
+            a.href = u; a.target = '_blank'; a.className = 'thumb';
+            const img = document.createElement('img'); img.src = u;
+            a.appendChild(img); wrap.appendChild(a);
+          });
+          out.appendChild(wrap);
+        }
+      } catch (e) {
+        $('#err').textContent = 'Failed to load product: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>
+
+

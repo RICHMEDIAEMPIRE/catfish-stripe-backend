@@ -112,6 +112,14 @@ app.use(
 // ===== HEALTH =====
 app.get("/health", (_req, res) => res.json({ ok: true, time: Date.now() }));
 
+// Serve static assets from /public (also mount at root)
+try {
+  const path = require('path');
+  const publicDir = path.join(__dirname, 'public');
+  app.use(express.static(publicDir, { maxAge: '1h' }));
+  app.use('/public', express.static(publicDir, { maxAge: '1h' }));
+} catch(_) {}
+
 
 // =====================================================================
 // ====================== PRINTFUL API INTEGRATION ====================
@@ -838,7 +846,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         }
         // price_override_cents could be applied to display in UI if needed
       }
-  } catch (e) {
+      } catch (e) {
       // Likely table missing; ignore silently
       console.warn('product_overrides not applied:', e.message);
     }
@@ -904,6 +912,68 @@ app.get("/debug/env", cors(), async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// === DEBUG: printful raw files/angles ===
+app.get('/debug/printful-raw-product/:id', cors(), async (req, res) => {
+  try {
+    const id = String(req.params.id).trim();
+    const token = process.env.PRINTFUL_API_KEY;
+    if (!token) return res.status(500).json({ error: 'Missing PRINTFUL_API_KEY' });
+
+    const baseUrl = `https://api.printful.com/store/products/${encodeURIComponent(id)}`;
+    async function fetchWithStoreId(url) {
+      let r = await fetch(url, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'Catfish Empire Server' } });
+      let t = await r.text(); let j; try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      if (!r.ok && /store_id/i.test(JSON.stringify(j))) {
+        const sid = process.env.PRINTFUL_STORE_ID;
+        if (!sid) return { ok: r.ok, status: r.status, data: j };
+        const r2 = await fetch(`${url}?store_id=${sid}`, { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'Catfish Empire Server' } });
+        const t2 = await r2.text(); let j2; try { j2 = JSON.parse(t2); } catch { j2 = { raw: t2 }; }
+        return { ok: r2.ok, status: r2.status, data: j2 };
+      }
+      return { ok: r.ok, status: r.status, data: j };
+    }
+
+    const resp = await fetchWithStoreId(baseUrl);
+    if (!resp.ok) return res.status(resp.status).json(resp.data);
+    const d = resp.data?.result || {};
+    const sp = d.sync_product || {};
+    const svs = Array.isArray(d.sync_variants) ? d.sync_variants : [];
+
+    function detectView(u=''){
+      const s = String(u).toLowerCase();
+      if (s.includes('back')) return 'back';
+      if (s.includes('left-front')) return 'left-front';
+      if (s.includes('right-front')) return 'right-front';
+      if (s.includes('left')) return 'left';
+      if (s.includes('right')) return 'right';
+      if (s.includes('front')) return 'front';
+      return 'unknown';
+    }
+
+    const productFiles = (sp.files||[]).map(f => ({
+      type: f.type, preview_url: f.preview_url, thumb: f.thumbnail_url, view: detectView(f.preview_url||'')
+    }));
+
+    const variants = svs.map(v => ({
+      id: v.id,
+      name: v.name,
+      files: (v.files||[]).map(f => ({
+        type: f.type, preview_url: f.preview_url, thumb: f.thumbnail_url, view: detectView(f.preview_url||'')
+      }))
+    }));
+
+    res.json({
+      product_id: d.id || sp.id || id,
+      product_name: sp.name || d.name,
+      product_files: productFiles,
+      variants
+    });
+  } catch (e) {
+    console.error('debug raw product error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
