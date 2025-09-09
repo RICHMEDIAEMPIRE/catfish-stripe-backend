@@ -60,6 +60,8 @@ const transporter = nodemailer.createTransport({
 // ===== SUPABASE STORAGE HELPERS (mockups) =====
 function normColor(c){ return String(c||'').trim().toLowerCase(); }
 function validView(v){ const s = String(v||'').toLowerCase(); return ['front','back','left','right'].includes(s) ? s : null; }
+function normUrl(u){ return String(u||'').replace(/^http:\/\//i,'https://'); }
+function uniqBy(arr, keyFn){ const m=new Map(); for(const it of (arr||[])){ const k=keyFn(it); if(!k) continue; if(!m.has(k)) m.set(k,it);} return Array.from(m.values()); }
 async function uploadMockupToSupabase({ productId, color, view, filename, contentType, buffer }) {
   const safeView = (view || 'other').toLowerCase();
   const path = `printful/${String(productId)}/${String(color).toLowerCase()}/${safeView}/${filename}`;
@@ -772,21 +774,19 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const galleryByColor = {}; // colorLower -> { views: {front,back,left,right}, images: [] }
     const viewOrder = ['front','back','left-front','right-front','left','right','other'];
     if (Array.isArray(sp.files)) {
-      sp.files.forEach(f => { const u=f?.preview_url; if (u && !isDesign(u) && !isGloballyHidden(u)) globalImagesSet.add(u); });
+      sp.files.forEach(f => { const u=normUrl(f?.preview_url); if (u && !isDesign(u) && !isGloballyHidden(u)) globalImagesSet.add(u); });
     }
     for (const v of svs) {
       const { color } = parseColorSize(v);
       const colorKey = (color || '').toLowerCase();
       const files = Array.isArray(v.files) ? v.files : [];
       for (const f of files) {
-        const url = f?.preview_url;
+        const url = normUrl(f?.preview_url);
         if (!url || isDesign(url) || isGloballyHidden(url)) continue;
         const view = viewFromUrl(url);
         globalImagesSet.add(url);
         if (!mockupsByColor[colorKey]) mockupsByColor[colorKey] = [];
-        if (!mockupsByColor[colorKey].some(m => m.url === url)) {
-          mockupsByColor[colorKey].push({ url, view });
-        }
+        if (!mockupsByColor[colorKey].some(m => m.url === url)) { mockupsByColor[colorKey].push({ url, view }); }
       }
     }
     Object.keys(mockupsByColor).forEach(colorKey => {
@@ -799,7 +799,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
           views[m.view] = m.url;
         }
       }
-      const imagesList = Array.from(new Set(mockupsByColor[colorKey].map(m => m.url)));
+      const imagesList = uniqBy(mockupsByColor[colorKey].map(m => m.url), u=>u).map(u=>u);
       galleryByColor[colorKey] = { views: views, images: imagesList };
     });
     let images = Array.from(globalImagesSet);
