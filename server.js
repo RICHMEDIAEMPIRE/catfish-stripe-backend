@@ -1487,7 +1487,7 @@ app.post("/create-checkout-session", async (req, res) => {
         }
         priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
         if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
-          return res.status(400).json({ error: "Printful variant price unavailable. Please reselect color/size." });
+          return res.status(400).json({ error: `Printful variant price invalid for variant ${variantId || 'unknown'} (computed ${priceInCents}c).` });
         }
         line_items.push({
           price_data: {
@@ -1553,12 +1553,21 @@ app.post("/create-checkout-session", async (req, res) => {
       sessionParams.shipping_address_collection = { allowed_countries: ["US"] };
       sessionParams.shipping_options = shippingOptions;
     }
+    // Validate multiple items have valid unit amounts
+    for (const li of line_items) {
+      const amt = li?.price_data?.unit_amount;
+      if (!Number.isFinite(amt) || amt < 50) {
+        return res.status(400).json({ error: `Invalid unit amount ${amt} on a line item.` });
+      }
+    }
+
     const session = await stripe.checkout.sessions.create(sessionParams);
 
     res.json({ url: session.url });
   } catch (err) {
     console.error("Stripe error:", err);
-    res.status(500).json({ error: "Checkout failed" });
+    const msg = (err && err.message) ? err.message : 'Checkout failed';
+    res.status(500).json({ error: msg });
   }
 });
 
