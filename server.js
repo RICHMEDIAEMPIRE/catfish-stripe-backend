@@ -53,6 +53,67 @@ function detectAngle(file){
   if (FRONTLIKE.test(hay)) return 'front';
   return 'front';
 }
+
+function buildGalleryByColor({ variants, files, overrides, defaultColor }){
+  const byColor = new Map();
+  // seed from variants
+  for (const v of variants || []){
+    const color = (v.color || v.color_code || v.name || '').toString().toLowerCase().split('/')[0].trim();
+    if (!color) continue;
+    if (!byColor.has(color)) byColor.set(color, {});
+  }
+  // attach files to angles, infer color from title/filename mention
+  for (const f of files || []){
+    const angle = detectAngle(f);
+    const url = f.preview_url || f.thumbnail_url || f.url;
+    if (!url) continue;
+    const raw = (f.title || f.filename || '').toLowerCase();
+    let targetColor = (defaultColor || '').toLowerCase();
+    for (const c of byColor.keys()){
+      if (raw.includes(c)) { targetColor = c; break; }
+    }
+    if (!targetColor) continue;
+    const bucket = byColor.get(targetColor) || {};
+    if (!bucket[angle]) bucket[angle] = url;
+    byColor.set(targetColor, bucket);
+  }
+  // admin overrides
+  const ov = overrides || {};
+  if (ov.custom_mockups && typeof ov.custom_mockups === 'object'){
+    for (const [color, angles] of Object.entries(ov.custom_mockups)){
+      const key = String(color||'').toLowerCase();
+      if (!byColor.has(key)) byColor.set(key, {});
+      const bucket = byColor.get(key);
+      for (const a of ANGLES){ if (angles[a]) bucket[a] = angles[a]; }
+      byColor.set(key, bucket);
+    }
+  }
+  if (ov.hidden_mockups && typeof ov.hidden_mockups === 'object'){
+    for (const [color, list] of Object.entries(ov.hidden_mockups)){
+      const key = String(color||'').toLowerCase();
+      if (!byColor.has(key)) continue;
+      const bucket = byColor.get(key);
+      for (const a of (Array.isArray(list)? list : [])){
+        if (bucket[a]) delete bucket[a];
+      }
+      byColor.set(key, bucket);
+    }
+  }
+  // fill from default
+  const def = defaultColor ? (byColor.get(String(defaultColor).toLowerCase()) || {}) : {};
+  for (const [color, bucket] of byColor.entries()){
+    for (const a of ANGLES){ if (!bucket[a] && def[a]) bucket[a] = def[a]; }
+    byColor.set(color, bucket);
+  }
+  // images dedupe
+  const imagesSet = new Set();
+  for (const b of byColor.values()) for (const a of ANGLES) if (b[a]) imagesSet.add(b[a]);
+  const galleryByColor = {};
+  for (const [color, bucket] of byColor.entries()){
+    galleryByColor[color] = { ...bucket, views: { front: bucket.front, back: bucket.back, left: bucket.left, right: bucket.right }, images: Array.from(new Set(Object.values(bucket).filter(Boolean))) };
+  }
+  return { galleryByColor, images: Array.from(imagesSet) };
+}
 let inventory = {};
 
 async function loadInventory() {
@@ -454,7 +515,7 @@ const allowedOrigins = [
   'https://test1243.netlify.app'
 ].filter(Boolean);
 
-app.use(cors({ 
+const corsAllow = cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
@@ -463,7 +524,8 @@ app.use(cors({
     }
   }, 
   credentials: true 
-}));
+});
+app.use(corsAllow);
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "changeme",
@@ -1562,7 +1624,7 @@ app.get('/api/promo/active', cors(), (req, res) => {
 });
 
 // Validate a code and set in session
-app.post('/api/promo/apply', cors(), express.json(), (req, res) => {
+app.post('/api/promo/apply', corsAllow, express.json(), (req, res) => {
   const code = String(req.body?.code || '').trim().toLowerCase().replace(/\s+/g,'');
   const pct = PROMO_MAP[code];
   if (!pct) return res.status(404).json({ ok: false, message: 'Invalid code' });
@@ -1571,13 +1633,13 @@ app.post('/api/promo/apply', cors(), express.json(), (req, res) => {
 });
 
 // Clear promo
-app.post('/api/promo/clear', cors(), (_req, res) => {
+app.post('/api/promo/clear', corsAllow, (_req, res) => {
   clearActivePromo(_req);
   res.json({ ok: true });
 });
 
 // Robust validator: parse env codes, case-insensitive, tolerant of spaces (code1..code5)
-app.post('/api/promo/validate', cors(), express.json(), (req, res) => {
+app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
   try {
     const input = String(req.body?.code || '').trim().toLowerCase();
     // narrowed parser per spec
