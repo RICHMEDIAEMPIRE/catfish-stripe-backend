@@ -150,21 +150,32 @@ async function buildPrintfulOrderItems(cartItems) {
 // Create Printful order (draft or confirm) from Stripe session + items
 async function createPrintfulOrder({ session, items, confirm }) {
   try {
-    const shipping = session.shipping?.address || session.collected_information?.shipping_details?.address || {};
-    const name = session.shipping?.name || session.customer_details?.name || 'No name';
-    const recipient = {
-      name,
-      address1: shipping.line1 || '',
-      address2: shipping.line2 || '',
-      city: shipping.city || '',
-      state_code: shipping.state || shipping.region || '',
-      country_code: shipping.country || 'US',
-      zip: shipping.postal_code || ''
-    };
+    function stripeToPrintfulRecipient(sess) {
+      const cd = sess.customer_details || {};
+      const ship = sess.shipping_details || {};
+      const addr = (ship && ship.address) || (cd && cd.address) || (sess.payment_intent?.shipping?.address) || null;
+      const fallback = process.env.PRINTFUL_TEST_RECIPIENT ? JSON.parse(process.env.PRINTFUL_TEST_RECIPIENT) : null;
+      const get = (o,k) => (o && o[k]) || undefined;
+      const rec = {
+        name: get(ship, 'name') || cd.name || get(fallback, 'name'),
+        address1: get(addr, 'line1') || get(fallback, 'address1'),
+        address2: get(addr, 'line2') || get(fallback, 'address2') || '',
+        city: get(addr, 'city') || get(fallback, 'city'),
+        state_code: get(addr, 'state') || get(fallback, 'state_code'),
+        country_code: get(addr, 'country') || get(fallback, 'country_code') || 'US',
+        zip: get(addr, 'postal_code') || get(fallback, 'zip'),
+        email: cd.email || get(fallback, 'email'),
+        phone: get(ship, 'phone') || cd.phone || get(fallback, 'phone')
+      };
+      Object.keys(rec).forEach(k => rec[k] === undefined && delete rec[k]);
+      return rec;
+    }
+
+    const recipient = stripeToPrintfulRecipient(session);
 
     const pfItems = await buildPrintfulOrderItems(items);
     const external_id = String(session.id || `sess_${Date.now()}`);
-    const body = { external_id, recipient, items: pfItems, confirm: !!confirm };
+    const body = { external_id, recipient, items: pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity, ...(x.retail_price ? { retail_price: x.retail_price } : {}) })), confirm: !!confirm };
 
     const token = getPrintfulAuthHeader().replace(/^Bearer\s+/i, '');
     const resp = await fetch('https://api.printful.com/orders', {
@@ -178,6 +189,9 @@ async function createPrintfulOrder({ session, items, confirm }) {
     });
     const text = await resp.text();
     let parsed; try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
+    try { globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: body }; } catch(_){ }
+    try { globalThis.__LAST_PF_RESPONSE__ = { status: resp.status, text }; } catch(_){ }
+    console.log('PRINTFUL ORDER RESPONSE', resp.status, text);
     LAST_PF_ORDER = { request: body, response: parsed, error: null, ts: Date.now() };
     if (PRINTFUL_LOG_ORDERS) console.log(`PF ORDER CREATED status=${resp.status} external_id=${external_id} confirm=${!!confirm}`);
     if (!resp.ok) throw new Error(`Printful error ${resp.status}: ${text}`);
@@ -1438,6 +1452,15 @@ app.get('/admin/printful/last', cors(), async (req, res) => {
   res.json({ ...LAST_PF_ORDER });
 });
 
+// Admin: fetch latest PF payload/response (compact)
+app.get('/admin/printful/debug', cors(), async (req, res) => {
+  if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+  res.json({
+    lastPayload: globalThis.__LAST_PF_PAYLOAD__ || null,
+    lastResponse: globalThis.__LAST_PF_RESPONSE__ || null
+  });
+});
+
 // ===== ADMIN/DEBUG: Trigger a test PF order (draft) =====
 app.post('/admin/printful/test-order', cors(), async (req, res) => {
   try {
@@ -1701,7 +1724,7 @@ app.post("/create-checkout-session", async (req, res) => {
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
     // Always require shipping address for correct Printful recipient
-    sessionParams.shipping_address_collection = { allowed_countries: ["US"] };
+    sessionParams.shipping_address_collection = { allowed_countries: ["US","CA"] };
     if (!isTestPromo) {
       sessionParams.shipping_options = shippingOptions;
     }
@@ -1837,9 +1860,13 @@ ${pfLines ? `\n${pfLines}` : ''}
 
     // Attempt to create a Printful draft or confirmable order
     try {
+      // Retrieve full session with expands for shipping
+      const sess = await stripe.checkout.sessions.retrieve(session.id, {
+        expand: ['customer', 'customer_details', 'shipping_details', 'payment_intent.shipping']
+      });
       const confirm = (process.env.PRINTFUL_CONFIRM === 'true' && process.env.PRINTFUL_AUTO_FULFILL === 'true');
       if (printfulLineItems.length) {
-        await createPrintfulOrder({ session, items: printfulLineItems, confirm });
+        await createPrintfulOrder({ session: sess, items: printfulLineItems, confirm });
       }
     } catch (e) {
       console.error('Printful order attempt failed:', e.message);
