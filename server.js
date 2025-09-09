@@ -1655,6 +1655,10 @@ app.post('/api/promo/clear', corsAllow, (_req, res) => {
 app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
   try {
     const input = String(req.body?.code || '').trim().toLowerCase();
+    const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
+    if (flat50 && input === flat50){
+      return res.json({ ok:true, code: flat50, percent: 0, minCents: 50, mode: 'flat50' });
+    }
     // narrowed parser per spec
     function readPromoCodesFromEnv(env = process.env) {
       const out = [];
@@ -1976,6 +1980,8 @@ app.post("/create-checkout-session", async (req, res) => {
     // Create line items with dynamic pricing based on product type
     const line_items = [];
     const activePromo = getActivePromo(req);
+    const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
+    const isFlat50 = flat50 && (promoCode === flat50 || activePromo?.code === flat50);
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
@@ -2012,7 +2018,7 @@ app.post("/create-checkout-session", async (req, res) => {
             console.warn('Variant fetch failed, using provided price:', e.message);
           }
         }
-        priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
+        priceInCents = isFlat50 ? 50 : priceAfterPromo(priceInCents, activePromo?.percent);
         if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
           return res.status(400).json({ error: `Printful variant price invalid for variant ${variantId || 'unknown'} (computed ${priceInCents}c).` });
         }
@@ -2036,8 +2042,8 @@ app.post("/create-checkout-session", async (req, res) => {
         });
       } else {
         // Sunglasses product - use existing hardcoded pricing
-        let priceInCents = 1499;
-        priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
+        let priceInCents = isFlat50 ? 50 : 1499;
+        if (!isFlat50) priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
         line_items.push({
         price_data: {
           currency: "usd",
@@ -2055,8 +2061,8 @@ app.post("/create-checkout-session", async (req, res) => {
         {
           shipping_rate_data: {
             type: "fixed_amount",
-            fixed_amount: { amount: 599, currency: "usd" },
-            display_name: "Flat Rate Shipping",
+            fixed_amount: { amount: isFlat50 ? 0 : 599, currency: "usd" },
+            display_name: isFlat50 ? "Free Shipping (Promo)" : "Flat Rate Shipping",
           },
         },
     ];
@@ -2075,9 +2081,9 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         ...metadata,
         promo_code: activePromo?.code || '',
-        test_discount_applied: String(activePromo?.percent || 0)
+        test_discount_applied: String(isFlat50 ? 'flat50' : (activePromo?.percent || 0))
       },
-      automatic_tax: { enabled: true },
+      automatic_tax: { enabled: false },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
