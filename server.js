@@ -1904,8 +1904,8 @@ app.post("/create-checkout-session", async (req, res) => {
       }
     }
 
-    // Flat shipping rate for normal orders; waived for test promo
-    const isTestPromo = (promoCode === TEST_PROMO_CODE);
+    // Flat shipping rate for all orders (promo does not affect shipping)
+    const isTestPromo = false;
     const shippingOptions = [
         {
           shipping_rate_data: {
@@ -1932,7 +1932,7 @@ app.post("/create-checkout-session", async (req, res) => {
         promo_code: activePromo?.code || '',
         test_discount_applied: String(activePromo?.percent || 0)
       },
-      automatic_tax: { enabled: !isTestPromo },
+      automatic_tax: { enabled: true },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
@@ -1941,9 +1941,7 @@ app.post("/create-checkout-session", async (req, res) => {
     if (hasPrintful) {
       sessionParams.shipping_address_collection = { allowed_countries: ["US","CA"] };
     }
-    if (!isTestPromo) {
-      sessionParams.shipping_options = shippingOptions;
-    }
+    sessionParams.shipping_options = shippingOptions;
     // Validate multiple items have valid unit amounts
     for (const li of line_items) {
       const amt = li?.price_data?.unit_amount;
