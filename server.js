@@ -1598,7 +1598,7 @@ app.post("/create-checkout-session", async (req, res) => {
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
-        let priceInCents = Math.round((item.price || 0) * 100);
+        let priceInCents = Number.isFinite(item.priceCents) ? Number(item.priceCents) : Math.round((item.price || 0) * 100);
         let name = item.name || 'Catfish Empire Product';
         let image = item.image || '';
 
@@ -1700,8 +1700,9 @@ app.post("/create-checkout-session", async (req, res) => {
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
+    // Always require shipping address for correct Printful recipient
+    sessionParams.shipping_address_collection = { allowed_countries: ["US"] };
     if (!isTestPromo) {
-      sessionParams.shipping_address_collection = { allowed_countries: ["US"] };
       sessionParams.shipping_options = shippingOptions;
     }
     // Validate multiple items have valid unit amounts
