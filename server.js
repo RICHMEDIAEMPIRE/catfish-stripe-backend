@@ -76,7 +76,7 @@ function loadPromoMapFromEnv() {
       console.warn(`Promo env code${i} is invalid. Expected (name)NN, got:`, raw);
       continue;
     }
-    const code = m[1].trim().toLowerCase();
+    const code = m[1].trim().toLowerCase().replace(/\s+/g,'');
     const percent = parseInt(m[2], 10);
     if (percent >= 0 && percent <= 100) map[code] = percent;
   }
@@ -1521,7 +1521,7 @@ app.get('/api/promo/active', cors(), (req, res) => {
 
 // Validate a code and set in session
 app.post('/api/promo/apply', cors(), express.json(), (req, res) => {
-  const code = String(req.body?.code || '').trim().toLowerCase();
+  const code = String(req.body?.code || '').trim().toLowerCase().replace(/\s+/g,'');
   const pct = PROMO_MAP[code];
   if (!pct) return res.status(404).json({ ok: false, message: 'Invalid code' });
   setActivePromo(req, { code, percent: pct });
