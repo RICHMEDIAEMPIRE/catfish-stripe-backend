@@ -57,6 +57,22 @@ const transporter = nodemailer.createTransport({
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
 });
 
+// Donation bounds
+const DON_MIN = parseInt(process.env.DONATION_MIN_CENTS || '100', 10);
+const DON_MAX = parseInt(process.env.DONATION_MAX_CENTS || '1000000', 10);
+
+// Test promo (cart) discount helpers
+const TEST_PROMO_CODE = 'catfish123';
+const TEST_DISCOUNT_FACTOR = 0.001; // 99.9% off -> pay 0.1%
+const TEST_MIN_CHARGE_CENTS = parseInt(process.env.TEST_MIN_CHARGE_CENTS || '50', 10);
+
+function applyTestDiscountIfAny(unitCents, promoCode) {
+  const code = String(promoCode || '').toLowerCase().trim();
+  if (code !== TEST_PROMO_CODE) return unitCents;
+  const discounted = Math.ceil(Number(unitCents) * TEST_DISCOUNT_FACTOR);
+  return Math.max(discounted, TEST_MIN_CHARGE_CENTS);
+}
+
 // ===== SUPABASE STORAGE HELPERS (mockups) =====
 function normColor(c){ return String(c||'').trim().toLowerCase(); }
 function validView(v){ const s = String(v||'').toLowerCase(); return ['front','back','left','right'].includes(s) ? s : null; }
@@ -1207,6 +1223,48 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
+// ===== DONATIONS: Create Stripe Checkout session =====
+app.post("/donate/create-checkout-session", cors(), async (req, res) => {
+  try {
+    const { amount } = req.body || {};
+    const dollars = Number(amount);
+    const cents = Math.round(dollars * 100);
+    if (!Number.isFinite(cents) || cents < DON_MIN || cents > DON_MAX) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "payment",
+      customer_creation: "always",
+      line_items: [{
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: "Charitable Donation to Catfish Empire",
+            metadata: { type: "donation" }
+          },
+          unit_amount: cents
+        },
+        quantity: 1
+      }],
+      automatic_tax: { enabled: false },
+      success_url: `${process.env.CLIENT_URL}/success.html?donation=1`,
+      cancel_url: `${process.env.CLIENT_URL}/`,
+      metadata: { intent: "donation", donation_cents: String(cents) },
+      payment_intent_data: {
+        description: "Charitable Donation to Catfish Empire",
+        metadata: { intent: "donation", donation_cents: String(cents) }
+      }
+    });
+
+    res.json({ url: session.url });
+  } catch (e) {
+    console.error("Donation session error:", e);
+    res.status(500).json({ error: "Donation checkout failed" });
+  }
+});
+
 // Admin: upload mockup via base64
 app.post('/admin/mockups/upload', async (req, res) => {
   try {
@@ -1381,6 +1439,10 @@ app.post('/admin/product-override/:id', async (req, res) => {
 // ===== STRIPE CHECKOUT =====
 app.post("/create-checkout-session", async (req, res) => {
   const { items, shippingState } = req.body;
+  let { promoCode } = req.body;
+  if (Array.isArray(promoCode)) promoCode = promoCode[0] || '';
+  if (typeof promoCode === 'string' && promoCode.includes(',')) promoCode = promoCode.split(',')[0].trim();
+  promoCode = (promoCode || '').toLowerCase().trim();
   if (!items || !Array.isArray(items))
     return res.status(400).json({ error: "Invalid cart format" });
 
@@ -1423,6 +1485,7 @@ app.post("/create-checkout-session", async (req, res) => {
             console.warn('Variant fetch failed, using provided price:', e.message);
           }
         }
+        priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
         if (!priceInCents || priceInCents < 50) {
           return res.status(400).json({ error: "Printful variant price unavailable. Please reselect color/size." });
         }
@@ -1446,11 +1509,13 @@ app.post("/create-checkout-session", async (req, res) => {
         });
       } else {
         // Sunglasses product - use existing hardcoded pricing
+        let priceInCents = 1499;
+        priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
         line_items.push({
         price_data: {
           currency: "usd",
           product_data: { name: `Catfish Empire™ ${item.color} Sunglasses` },
-          unit_amount: 1499,
+          unit_amount: priceInCents,
         },
         quantity: item.qty,
         });
@@ -1476,6 +1541,8 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         items: JSON.stringify(items),
         shippingState: shippingState || "Unknown",
+        promo_code: promoCode || '',
+        test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : '0'
       },
       shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: true },
@@ -1506,6 +1573,33 @@ app.post("/webhook", async (req, res) => {
 
   if (event.type === "checkout.session.completed") {
     const session = event.data.object;
+
+    const isDonation = session.metadata?.intent === "donation";
+    if (isDonation) {
+      try {
+        const email = session.customer_email || session.customer_details?.email || "Unknown";
+        const name = session.customer_details?.name || "Donor";
+        const amount = (session.amount_total || 0) / 100;
+        const when = new Date((event.created || Math.floor(Date.now()/1000)) * 1000);
+
+        const donorMsg = `Thank you for supporting Catfish Empire!\n\nCharitable Donation to Catfish Empire\nAmount: $${amount.toFixed(2)}\nDate: ${when.toLocaleString()}\n\nWe appreciate your support!\n— Catfish Empire`;
+        transporter.sendMail({
+          from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
+          to: email,
+          subject: "Thank you for your donation to Catfish Empire",
+          text: donorMsg
+        }, () => {});
+
+        const adminMsg = `🧾 NEW DONATION\n\n👤 Donor: ${name} <${email}>\n💵 Amount: $${amount.toFixed(2)}\n🕒 Date: ${when.toLocaleString()}\n🔗 Stripe Session: ${session.id}\n`;
+        transporter.sendMail({
+          from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
+          to: "rich@richmediaempire.com",
+          subject: "New Donation Received",
+          text: adminMsg
+        }, () => {});
+      } catch (e) { console.error('Donation email error:', e.message); }
+      return res.json({ received: true });
+    }
 
     const items = JSON.parse(session.metadata?.items || "[]");
     const shippingState = session.metadata?.shippingState || "Unknown";
