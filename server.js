@@ -1486,7 +1486,7 @@ app.post("/create-checkout-session", async (req, res) => {
           }
         }
         priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
-        if (!priceInCents || priceInCents < 50) {
+        if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
           return res.status(400).json({ error: "Printful variant price unavailable. Please reselect color/size." });
         }
         line_items.push({
@@ -1545,12 +1545,12 @@ app.post("/create-checkout-session", async (req, res) => {
         promo_code: promoCode || '',
         test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : '0'
       },
-      shipping_address_collection: { allowed_countries: ["US"] },
       automatic_tax: { enabled: !isTestPromo },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
     if (!isTestPromo) {
+      sessionParams.shipping_address_collection = { allowed_countries: ["US"] };
       sessionParams.shipping_options = shippingOptions;
     }
     const session = await stripe.checkout.sessions.create(sessionParams);
