@@ -1551,11 +1551,26 @@ app.post('/api/promo/clear', cors(), (_req, res) => {
   res.json({ ok: true });
 });
 
-// Robust validator: parse env codes, case-insensitive, tolerant of spaces
+// Robust validator: parse env codes, case-insensitive, tolerant of spaces (code1..code5)
 app.post('/api/promo/validate', cors(), express.json(), (req, res) => {
   try {
     const input = String(req.body?.code || '').trim().toLowerCase();
-    const promos = parseEnvPromos();
+    // narrowed parser per spec
+    function readPromoCodesFromEnv(env = process.env) {
+      const out = [];
+      for (let i = 1; i <= 5; i++) {
+        const key = `code${i}`;
+        const v = env[key] ?? env[key.toUpperCase()];
+        if (!v) continue;
+        const m = String(v).match(/\(([^)]+)\)\s*(\d{1,3})/);
+        if (!m) continue;
+        const code = m[1].trim().toLowerCase();
+        const percent = Math.min(100, Math.max(0, parseInt(m[2], 10) || 0));
+        out.push({ code, percent });
+      }
+      return [...new Map(out.map(p => [p.code, p])).values()];
+    }
+    const promos = readPromoCodesFromEnv();
     const found = promos.find(p => p.code === input);
     if (!found) return res.status(404).json({ ok:false });
     return res.json({ ok:true, code: found.code, percent: found.percent, minCents: 50 });
