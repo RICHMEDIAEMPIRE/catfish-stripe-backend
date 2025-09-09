@@ -63,19 +63,10 @@ const DON_MIN = parseInt(process.env.DONATION_MIN_CENTS || '100', 10);
 const DON_MAX = parseInt(process.env.DONATION_MAX_CENTS || '1000000', 10);
 
 // Test promo (cart) discount helpers
-const TEST_PROMO_CODE = 'catfish123';
-const TEST_DISCOUNT_FACTOR = 0.001; // 99.9% off -> pay 0.1%
 const TEST_MIN_CHARGE_CENTS = parseInt(process.env.TEST_MIN_CHARGE_CENTS || '50', 10);
 
-function applyTestDiscountIfAny(unitCents, promoCode) {
-  const code = String(promoCode || '').toLowerCase().trim();
-  if (code !== TEST_PROMO_CODE) return unitCents;
-  const discounted = Math.ceil(Number(unitCents) * TEST_DISCOUNT_FACTOR);
-  return Math.max(discounted, TEST_MIN_CHARGE_CENTS);
-}
-
 // === Promo codes from env: code1=(name)15 ... code10 ===
-function getEnvPromoMap() {
+function loadPromoMapFromEnv() {
   const map = {};
   for (let i = 1; i <= 10; i++) {
     const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
@@ -91,6 +82,7 @@ function getEnvPromoMap() {
   }
   return map;
 }
+let PROMO_MAP = loadPromoMapFromEnv();
 function getActivePromo(req){ return req.session?.promo || null; }
 function setActivePromo(req, promo){ if (!req.session) req.session = {}; req.session.promo = promo; }
 function clearActivePromo(req){ if (req.session) req.session.promo = null; }
@@ -105,10 +97,10 @@ function calcCartTotals(lines, promo){
   const totalCents = Math.max(0, subCents - discountCents) + shippingCents;
   return { subCents, discountCents, shippingCents, totalCents };
 }
-function applyPercentPromo(unitCents, promo){
-  if (!promo || !promo.percent) return unitCents;
-  const discounted = Math.floor(Number(unitCents) * (1 - (promo.percent/100)));
-  return Math.max(TEST_MIN_CHARGE_CENTS, discounted);
+function priceAfterPromo(cents, promoPercent){
+  if (!promoPercent) return cents;
+  const kept = Math.max(0, 100 - Number(promoPercent));
+  return Math.max(0, Math.round((Number(cents) * kept) / 100));
 }
 
 // ===== Stripe → Printful recipient mapper =====
@@ -1527,6 +1519,21 @@ app.get('/api/promo/active', cors(), (req, res) => {
   }
 });
 
+// Validate a code and set in session
+app.post('/api/promo/apply', cors(), express.json(), (req, res) => {
+  const code = String(req.body?.code || '').trim().toLowerCase();
+  const pct = PROMO_MAP[code];
+  if (!pct) return res.status(404).json({ ok: false, message: 'Invalid code' });
+  setActivePromo(req, { code, percent: pct });
+  res.json({ ok: true, code, percent: pct });
+});
+
+// Clear promo
+app.post('/api/promo/clear', cors(), (_req, res) => {
+  clearActivePromo(_req);
+  res.json({ ok: true });
+});
+
 // ===== DONATIONS: Create Stripe Checkout session =====
 app.post("/donate/create-checkout-session", cors(), async (req, res) => {
   try {
@@ -1823,7 +1830,7 @@ app.post("/create-checkout-session", async (req, res) => {
   try {
     // Create line items with dynamic pricing based on product type
     const line_items = [];
-    const activePromo = getActivePromo(req) || (promoCode ? { code: promoCode, percent: (getEnvPromoMap()[promoCode]||0) } : null);
+    const activePromo = getActivePromo(req);
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
@@ -1860,8 +1867,7 @@ app.post("/create-checkout-session", async (req, res) => {
             console.warn('Variant fetch failed, using provided price:', e.message);
           }
         }
-        priceInCents = applyPercentPromo(priceInCents, activePromo);
-        priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
+        priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
         if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
           return res.status(400).json({ error: `Printful variant price invalid for variant ${variantId || 'unknown'} (computed ${priceInCents}c).` });
         }
@@ -1886,8 +1892,7 @@ app.post("/create-checkout-session", async (req, res) => {
       } else {
         // Sunglasses product - use existing hardcoded pricing
         let priceInCents = 1499;
-        priceInCents = applyPercentPromo(priceInCents, activePromo);
-        priceInCents = applyTestDiscountIfAny(priceInCents, promoCode);
+        priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
         line_items.push({
         price_data: {
           currency: "usd",
@@ -1924,8 +1929,8 @@ app.post("/create-checkout-session", async (req, res) => {
       line_items,
       metadata: {
         ...metadata,
-        promo_code: promoCode || '',
-        test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : String(activePromo?.percent || 0)
+        promo_code: activePromo?.code || '',
+        test_discount_applied: String(activePromo?.percent || 0)
       },
       automatic_tax: { enabled: !isTestPromo },
       success_url: `${process.env.CLIENT_URL}/success.html`,
