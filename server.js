@@ -1428,6 +1428,16 @@ app.post("/inventory", async (req, res) => {
   res.json({ success: true });
 });
 
+// ===== PROMO: Active promo state =====
+app.get('/api/promo/active', cors(), (req, res) => {
+  try {
+    const promo = getActivePromo(req);
+    res.json({ promo });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ===== DONATIONS: Create Stripe Checkout session =====
 app.post("/donate/create-checkout-session", cors(), async (req, res) => {
   try {
