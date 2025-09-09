@@ -142,6 +142,113 @@ function withStoreId(baseUrl) {
   return `${baseUrl}${separator}store_id=${encodeURIComponent(storeId)}`;
 }
 
+// ===================== DEBUG HELPERS (Printful) =====================
+// Ping Printful with auth header to verify token/permissions quickly
+app.get('/api/debug/ping-printful', cors(), async (req, res) => {
+  try {
+    const r = await fetch('https://api.printful.com/stores', {
+      headers: {
+        Authorization: getPrintfulAuthHeader(),
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish-Debug/1.0'
+      }
+    });
+    const text = await r.text();
+    let json; try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    res.status(r.status).json({ ok: r.ok, status: r.status, body: json });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Get the raw Printful store product (with store_id retry) + a compact summary
+app.get('/api/debug/product/:id', cors(), async (req, res) => {
+  const id = String(req.params.id).trim();
+  try {
+    const token = process.env.PRINTFUL_API_KEY;
+    if (!token) return res.status(500).json({ error: 'PRINTFUL_API_KEY missing' });
+
+    const baseUrl = `https://api.printful.com/store/products/${encodeURIComponent(id)}`;
+    const doFetch = async (url) => {
+      const r = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Catfish-Debug/1.0'
+        }
+      });
+      const t = await r.text();
+      let j; try { j = JSON.parse(t); } catch { j = { raw: t }; }
+      return { r, j };
+    };
+
+    // try without store_id
+    let { r, j } = await doFetch(baseUrl);
+    if (!r.ok && /store_id/i.test(JSON.stringify(j))) {
+      const sid = process.env.PRINTFUL_STORE_ID || await getPrintfulStoreId().catch(() => null);
+      if (!sid) return res.status(400).json({ error: 'Printful requires store_id and none is configured.' });
+      ({ r, j } = await doFetch(`${baseUrl}?store_id=${encodeURIComponent(sid)}`));
+    }
+    if (!r.ok) return res.status(r.status).json({ error: 'Printful product fetch failed', details: j });
+
+    const d = j?.result || {};
+    const sp = d.sync_product || {};
+    const sv = Array.isArray(d.sync_variants) ? d.sync_variants : [];
+
+    const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+    const parseCS = (v) => {
+      const color = v.color || v.product_color || '';
+      const size = v.size || v.product_size || '';
+      if (color || size) return { color, size };
+      const parts = String(v.name||'').split(/[\/\-]/).map(s => s.trim());
+      const sizeTok = parts.find(p => SIZE_LIST.includes(p.toUpperCase())) || '';
+      const colorTok = parts.find(p => p !== sizeTok) || '';
+      return { color: colorTok, size: sizeTok };
+    };
+
+    const byColor = {};
+    for (const v of sv) {
+      const { color, size } = parseCS(v);
+      const cKey = (color||'').toLowerCase();
+      if (!byColor[cKey]) byColor[cKey] = { count: 0, sizes: new Set(), files: [] };
+      byColor[cKey].count++;
+      if (size) byColor[cKey].sizes.add(size);
+      (v.files || []).forEach(f => {
+        byColor[cKey].files.push({
+          type: f.type || null,
+          preview_url: f.preview_url || null,
+          thumbnail_url: f.thumbnail_url || null
+        });
+      });
+    }
+    Object.values(byColor).forEach(x => x.sizes = Array.from(x.sizes));
+
+    res.json({
+      ok: true,
+      product: { id: d.id || sp.id, name: sp.name || d.name, thumbnail: sp.thumbnail_url || null },
+      variants: sv.length,
+      summaryByColor: byColor,
+      raw: j
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Optional: simple view of image urls by color (front/back/left/right if detectable)
+app.get('/api/debug/mockups/:id', cors(), async (req, res) => {
+  try {
+    const url = `${req.protocol}://${req.get('host')}/api/debug/product/${encodeURIComponent(req.params.id)}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data);
+    res.json({ ok: true, fromVariants: true, ...data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+// =================== END DEBUG HELPERS (Printful) ====================
+
 // ====================== PRINTFUL OAUTH (Bearer) =====================
 // In-memory token storage (replace with persistent storage later)
 let printfulAccessToken = null;
