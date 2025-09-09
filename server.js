@@ -1,6 +1,7 @@
 // ===== ENV & CORE =====
 require("dotenv").config();
 const express = require("express");
+const compression = require("compression");
 const crypto = require('crypto');
 const cors = require("cors");
 const session = require("express-session");
@@ -11,7 +12,14 @@ const { createClient } = require("@supabase/supabase-js");
 const fetch = require("node-fetch"); // v2 for CommonJS
 
 const app = express();
+// gzip compression for faster responses
+app.use(compression());
 app.set("trust proxy", 1);
+
+// simple in-memory TTL cache
+const _cache = new Map();
+function setCache(key, value, ttlMs = 10 * 60 * 1000) { _cache.set(key, { value, exp: Date.now() + ttlMs }); }
+function getCache(key) { const hit = _cache.get(key); if (!hit) return null; if (Date.now() > hit.exp) { _cache.delete(key); return null; } return hit.value; }
 
 // ===== RAW BODY FOR WEBHOOKS =====
 app.use((req, res, next) => {
@@ -28,6 +36,23 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// ---- Angle detection helpers ----
+const ANGLES = ["front","back","left","right"];
+const FRONTLIKE = /(front|main|default|cover)/i;
+const BACKLIKE  = /(back)/i;
+const LEFTLIKE  = /(left|side-left|leftside)/i;
+const RIGHTLIKE = /(right|side-right|rightside)/i;
+
+function detectAngle(file){
+  const pos = (file?.options?.placement || file?.position || file?.type || "").toString().toLowerCase();
+  const title = (file?.title || file?.filename || "").toString().toLowerCase();
+  const hay = `${pos} ${title}`;
+  if (BACKLIKE.test(hay)) return 'back';
+  if (LEFTLIKE.test(hay)) return 'left';
+  if (RIGHTLIKE.test(hay)) return 'right';
+  if (FRONTLIKE.test(hay)) return 'front';
+  return 'front';
+}
 let inventory = {};
 
 async function loadInventory() {
@@ -1571,7 +1596,7 @@ app.post('/api/promo/validate', cors(), express.json(), (req, res) => {
       return [...new Map(out.map(p => [p.code, p])).values()];
     }
     const promos = readPromoCodesFromEnv();
-    const found = promos.find(p => p.code === input);
+    const found = promos.find(p => p.code === input.replace(/\s+/g,''));
     if (!found) return res.status(404).json({ ok:false });
     return res.json({ ok:true, code: found.code, percent: found.percent, minCents: 50 });
   } catch (e) {
