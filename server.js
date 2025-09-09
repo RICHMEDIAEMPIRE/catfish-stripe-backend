@@ -148,6 +148,67 @@ function stripeToPrintfulRecipient(session){
   return out;
 }
 
+// ===== Robust variant recovery helpers =====
+function titleCase(s){ return (s||'').toString().replace(/\b\w/g,c=>c.toUpperCase()); }
+const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+function parseColorSize(variant){
+  const explicitColor = variant.color || variant.product_color || null;
+  const explicitSize  = variant.size  || variant.product_size  || null;
+  if (explicitColor || explicitSize) return { color: explicitColor||'', size: explicitSize||'' };
+  const name = String(variant.name||'');
+  const tokens = name.split(/[\/-]/).map(t=>t.trim());
+  let sizeToken = '';
+  let colorToken = '';
+  for (const t of tokens){ if (SIZE_LIST.includes(t.toUpperCase())) { sizeToken = t; break; } }
+  if (sizeToken){ const other = tokens.find(t=>t!==sizeToken) || ''; colorToken = other; }
+  else { colorToken = tokens[0] || ''; }
+  return { color: colorToken, size: sizeToken };
+}
+
+async function fetchProductVariantsForLookup(productId, token, storeId){
+  const base = `https://api.printful.com/store/products/${encodeURIComponent(productId)}`;
+  const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'User-Agent': 'Catfish Empire Server' };
+  let r = await fetch(base, { headers });
+  let text = await r.text(); let j; try{ j = JSON.parse(text); } catch { j = { raw:text }; }
+  if (!r.ok && /store_id/i.test(JSON.stringify(j)) && storeId){
+    r = await fetch(`${base}?store_id=${encodeURIComponent(storeId)}`, { headers });
+    text = await r.text(); try{ j = JSON.parse(text); } catch { j = { raw:text }; }
+  }
+  if (!r.ok) throw new Error(`variant lookup ${r.status}`);
+  const sv = j?.result?.sync_variants || [];
+  const matrix = {};
+  for (const v of sv){
+    const { color, size } = parseColorSize(v);
+    const key = `${String(color||'').toLowerCase()}|${String(size||'').toLowerCase()}`;
+    if (v.id) matrix[key] = Number(v.id);
+  }
+  return { variants: sv, matrix };
+}
+
+async function recoverVariantId(item, token, storeId){
+  const direct = Number(item.vid || item.variantId || item.variant_id || 0);
+  if (direct) return direct;
+  if (!item.pid || !item.c || !item.s) return null;
+  const { variants, matrix } = await fetchProductVariantsForLookup(item.pid, token, storeId);
+  const key = `${String(item.c).toLowerCase()}|${String(item.s).toLowerCase()}`;
+  if (matrix[key]) return Number(matrix[key]);
+  const found = variants.find(v=>{ const cs = parseColorSize(v); return String(cs.color).toLowerCase()===String(item.c).toLowerCase() && String(cs.size).toLowerCase()===String(item.s).toLowerCase(); });
+  return found ? Number(found.id) : null;
+}
+
+async function buildPrintfulItems(decodedItems, token, storeId){
+  const out = [];
+  for (const i of decodedItems){
+    if ((i.t || i.type) !== 'printful') continue;
+    const qty = Math.max(1, Number(i.q||i.qty||1));
+    const pid = i.pid || i.productId || i.id;
+    const color = i.c || i.color; const size = i.s || i.size;
+    const vid = await recoverVariantId({ vid:i.vid||i.variantId||i.variant_id, pid, c:color, s:size }, token, storeId);
+    if (vid) out.push({ variant_id: Number(vid), quantity: qty });
+  }
+  return out;
+}
+
 // ====== Compact cart item metadata (avoid 500 char limits) ======
 // pack a single item into a tiny pipe-delimited string: t|pid|vid|q|c|s
 function packItem(it) {
@@ -1543,7 +1604,12 @@ app.get('/admin/printful/debug', cors(), async (req, res) => {
   const okByToken = DEBUG_TOKEN && req.query.token === DEBUG_TOKEN;
   const okBySession = !!(req.session?.authenticated) || req.session?.isAdmin === true;
   if (!okByToken && !okBySession) return res.status(401).json({ error: 'unauthorized' });
-  res.json({ lastPayload: globalThis.__LAST_PF_PAYLOAD__ || null, lastResponse: globalThis.__LAST_PF_RESPONSE__ || null });
+  res.json({
+    decoded:  globalThis.__LAST_PF_DECODED__  || null,
+    items:    globalThis.__LAST_PF_ITEMS__    || null,
+    lastPayload:  globalThis.__LAST_PF_PAYLOAD__  || null,
+    lastResponse: globalThis.__LAST_PF_RESPONSE__ || null
+  });
 });
 
 // ===== ADMIN/DEBUG: Trigger a test PF order (draft) =====
@@ -1949,21 +2015,39 @@ ${pfLines ? `\n${pfLines}` : ''}
       }
     );
 
-    // Attempt to create a Printful draft or confirmable order
+    // Attempt to create a Printful draft using robust recovery + diagnostics
+    globalThis.__LAST_PF_DECODED__   = null;
+    globalThis.__LAST_PF_ITEMS__     = null;
+    globalThis.__LAST_PF_PAYLOAD__   = null;
+    globalThis.__LAST_PF_RESPONSE__  = null;
     try {
-      // Retrieve session (shipping_details is not expandable)
-      const sess = await stripe.checkout.sessions.retrieve(session.id, {
-        expand: ['payment_intent', 'customer', 'customer_details']
-      });
-      // Fetch line items if needed for diagnostics or enrichment
+      const sess = await stripe.checkout.sessions.retrieve(session.id, { expand: ['payment_intent','customer','customer_details'] });
       try { await stripe.checkout.sessions.listLineItems(session.id, { expand: ['data.price.product'] }); } catch(_){ }
-      const confirm = (process.env.PRINTFUL_CONFIRM === 'true' && process.env.PRINTFUL_AUTO_FULFILL === 'true');
-      if (printfulLineItems.length) {
-        await createPrintfulOrder({ session: sess, items: printfulLineItems, confirm });
+      const token   = process.env.PRINTFUL_API_KEY;
+      const storeId = process.env.PRINTFUL_STORE_ID;
+      const decoded = items.map(x => ({ t: x.type || x.t, pid: Number(x.productId || x.pid || x.id || 0) || null, vid: Number(x.variantId || x.variant_id || x.vid || 0) || null, q: Number(x.qty || x.q || 1) || 1, c: x.color || x.c || '', s: x.size  || x.s || '' }));
+      globalThis.__LAST_PF_DECODED__ = decoded;
+      const pfItems = token ? await buildPrintfulItems(decoded, token, storeId) : [];
+      globalThis.__LAST_PF_ITEMS__ = pfItems;
+      if (token && pfItems.length){
+        const recipient = stripeToPrintfulRecipient(sess);
+        const incomplete = !recipient.address1 || !recipient.city || !recipient.state_code || !recipient.country_code || !recipient.zip;
+        if (incomplete){
+          console.warn('SKIP Printful: recipient incomplete', recipient);
+          globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'Recipient incomplete', recipient };
+        } else {
+          const body = { external_id: session.id, confirm:false, recipient, items: pfItems };
+          globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body };
+          const url = storeId ? `https://api.printful.com/orders?store_id=${encodeURIComponent(storeId)}` : 'https://api.printful.com/orders';
+          const resp = await fetch(url, { method:'POST', headers:{ 'Authorization': `Bearer ${token}`, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+          const text = await resp.text();
+          console.log('PRINTFUL ORDER RESPONSE', resp.status, text);
+          globalThis.__LAST_PF_RESPONSE__ = { status: resp.status, text };
+        }
+      } else {
+        globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text: token ? 'No pfItems' : 'No PRINTFUL_API_KEY' };
       }
-    } catch (e) {
-      console.error('Printful order attempt failed:', e.message);
-    }
+    } catch (e) { console.error('Printful order attempt failed:', e?.message || e); globalThis.__LAST_PF_RESPONSE__ = { status:'EXCEPTION', text:String(e?.message||e) }; }
 
     console.log("✅ Inventory updated from payment");
   }
