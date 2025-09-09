@@ -73,6 +73,87 @@ function applyTestDiscountIfAny(unitCents, promoCode) {
   return Math.max(discounted, TEST_MIN_CHARGE_CENTS);
 }
 
+// ===== PRINTFUL ORDER ENV FLAGS & LAST ORDER LOG =====
+// PRINTFUL_AUTO_FULFILL: if true and PRINTFUL_CONFIRM true, we attempt to confirm order
+// PRINTFUL_CONFIRM: if true and auto-fulfill true, order will be confirmed; otherwise draft
+// PRINTFUL_LOG_ORDERS: default true; controls console logging of order results
+const PRINTFUL_AUTO_FULFILL = String(process.env.PRINTFUL_AUTO_FULFILL || 'false').toLowerCase() === 'true';
+const PRINTFUL_CONFIRM = String(process.env.PRINTFUL_CONFIRM || 'false').toLowerCase() === 'true';
+const PRINTFUL_LOG_ORDERS = String(process.env.PRINTFUL_LOG_ORDERS || 'true').toLowerCase() !== 'false';
+
+let LAST_PF_ORDER = { request: null, response: null, error: null, ts: 0 };
+
+// Build Printful order items from cart items that are already coerced/validated
+async function buildPrintfulOrderItems(cartItems) {
+  const out = [];
+  for (const it of (cartItems || [])) {
+    if (it.type !== 'printful') continue;
+    // Ensure we have sync variant id; coercePrintfulCartItem should have provided it
+    let variantId = it.variantId || it.variant_id || null;
+    let qty = Math.max(1, Number(it.quantity || it.qty || 1));
+    let priceCents = Number.isFinite(it.priceCents) ? Number(it.priceCents) : null;
+
+    // If still missing, try resolve again
+    if (!variantId && it.productId && (it.color || it.size)) {
+      try {
+        const resolved = await resolveVariantByProductColorSize(it.productId, it.color, it.size);
+        if (resolved?.variantId) variantId = resolved.variantId;
+        if (!priceCents && resolved?.priceCents) priceCents = resolved.priceCents;
+      } catch {}
+    }
+    if (!variantId) continue; // skip unsafely
+
+    const item = { sync_variant_id: Number(variantId), quantity: qty };
+    if (Number.isFinite(priceCents) && priceCents > 0) {
+      item.retail_price = (priceCents / 100).toFixed(2);
+    }
+    out.push(item);
+  }
+  return out;
+}
+
+// Create Printful order (draft or confirm) from Stripe session + items
+async function createPrintfulOrder({ session, items, confirm }) {
+  try {
+    const shipping = session.shipping?.address || session.collected_information?.shipping_details?.address || {};
+    const name = session.shipping?.name || session.customer_details?.name || 'No name';
+    const recipient = {
+      name,
+      address1: shipping.line1 || '',
+      address2: shipping.line2 || '',
+      city: shipping.city || '',
+      state_code: shipping.state || shipping.region || '',
+      country_code: shipping.country || 'US',
+      zip: shipping.postal_code || ''
+    };
+
+    const pfItems = await buildPrintfulOrderItems(items);
+    const external_id = String(session.id || `sess_${Date.now()}`);
+    const body = { external_id, recipient, items: pfItems, confirm: !!confirm };
+
+    const token = getPrintfulAuthHeader().replace(/^Bearer\s+/i, '');
+    const resp = await fetch('https://api.printful.com/orders', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Catfish Empire Server'
+      },
+      body: JSON.stringify(body)
+    });
+    const text = await resp.text();
+    let parsed; try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
+    LAST_PF_ORDER = { request: body, response: parsed, error: null, ts: Date.now() };
+    if (PRINTFUL_LOG_ORDERS) console.log(`PF ORDER CREATED status=${resp.status} external_id=${external_id} confirm=${!!confirm}`);
+    if (!resp.ok) throw new Error(`Printful error ${resp.status}: ${text}`);
+    return parsed;
+  } catch (e) {
+    LAST_PF_ORDER = { request: LAST_PF_ORDER.request, response: LAST_PF_ORDER.response, error: String(e.message||e), ts: Date.now() };
+    if (PRINTFUL_LOG_ORDERS) console.error(`PF ORDER ERROR status=unknown body=${LAST_PF_ORDER.error}`);
+    throw e;
+  }
+}
+
 // ===== SUPABASE STORAGE HELPERS (mockups) =====
 function normColor(c){ return String(c||'').trim().toLowerCase(); }
 function validView(v){ const s = String(v||'').toLowerCase(); return ['front','back','left','right'].includes(s) ? s : null; }
@@ -1316,6 +1397,36 @@ app.post('/admin/mockups/delete', async (req, res) => {
   }
 });
 
+// ===== ADMIN/DEBUG: Printful last order =====
+app.get('/admin/printful/last', cors(), async (req, res) => {
+  if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+  res.json({ ...LAST_PF_ORDER });
+});
+
+// ===== ADMIN/DEBUG: Trigger a test PF order (draft) =====
+app.post('/admin/printful/test-order', cors(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const { variantId, quantity, address } = req.body || {};
+    const fakeSession = {
+      id: `test_${Date.now()}`,
+      shipping: { name: 'Test User', address: {
+        line1: address?.line1 || '123 Test St',
+        line2: address?.line2 || '',
+        city: address?.city || 'Raleigh',
+        state: address?.state || 'NC',
+        postal_code: address?.postal_code || '27601',
+        country: address?.country || 'US'
+      }}
+    };
+    const items = [{ type:'printful', variantId: Number(variantId), quantity: Math.max(1, Number(quantity||1)) }];
+    const out = await createPrintfulOrder({ session: fakeSession, items, confirm: false });
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message, last: LAST_PF_ORDER });
+  }
+});
+
 // Admin: add mockups to a color (optional view)
 app.post('/admin/mockup/by-color', async (req, res) => {
   try {
@@ -1647,6 +1758,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     const promoNote = session.metadata?.promo_code ? `\n🎟️ Promo: ${session.metadata.promo_code} (${session.metadata.test_discount_applied}% off)` : '';
+    const pfLines = printfulLineItems.map(safe => `PF: ${safe.quantity} × ${safe.name} — sync_variant_id=${safe.variantId} color=${safe.color||'n/a'} size=${safe.size||'n/a'}`).join("\n");
     const message = `🧾 NEW ORDER
 
 👤 Name: ${shippingName}
@@ -1660,11 +1772,12 @@ ${shipping.country || "USA"}
 
 🛍️ Items:
 ${updated.join("\n")}
+${pfLines ? `\n${pfLines}` : ''}
 
 💰 Total: $${items.reduce((sum, item) => {
   const price = item.type === 'printful' ? item.price : 14.99;
   return sum + (price * item.qty);
-}, 0).toFixed(2)} + $5.99 shipping + tax${promoNote}
+}, 0).toFixed(2)} + $5.99 shipping + tax${promoNote}${LAST_PF_ORDER?.error ? "\n⚠️ Printful error recorded; see /admin/printful/last" : ''}
 `;
 
     transporter.sendMail(
@@ -1680,13 +1793,15 @@ ${updated.join("\n")}
       }
     );
 
-    // Attempt to create a Printful draft order
+    // Attempt to create a Printful draft or confirmable order
     try {
-      if (printfulLineItems.length && shipping && shippingName) {
-        const recipient = { name: shippingName, line1: shipping.line1 || '', line2: shipping.line2 || '', city: shipping.city || '', state: shipping.state || '', postal_code: shipping.postal_code || '', country: shipping.country || 'US', email };
-        await createPrintfulDraftOrder(recipient, printfulLineItems);
+      const confirm = (process.env.PRINTFUL_CONFIRM === 'true' && process.env.PRINTFUL_AUTO_FULFILL === 'true');
+      if (printfulLineItems.length) {
+        await createPrintfulOrder({ session, items: printfulLineItems, confirm });
       }
-    } catch (e) { console.error('Printful draft order attempt failed:', e.message); }
+    } catch (e) {
+      console.error('Printful order attempt failed:', e.message);
+    }
 
     console.log("✅ Inventory updated from payment");
   }
