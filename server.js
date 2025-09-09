@@ -1522,7 +1522,8 @@ app.post("/create-checkout-session", async (req, res) => {
       }
     }
 
-    // Flat shipping rate for all orders
+    // Flat shipping rate for normal orders; waived for test promo
+    const isTestPromo = (promoCode === TEST_PROMO_CODE);
     const shippingOptions = [
         {
           shipping_rate_data: {
@@ -1533,7 +1534,7 @@ app.post("/create-checkout-session", async (req, res) => {
         },
     ];
 
-    const session = await stripe.checkout.sessions.create({
+    const sessionParams = {
       payment_method_types: ["card"],
       mode: "payment",
       customer_creation: "always",
@@ -1545,11 +1546,14 @@ app.post("/create-checkout-session", async (req, res) => {
         test_discount_applied: (promoCode === TEST_PROMO_CODE) ? '99.9' : '0'
       },
       shipping_address_collection: { allowed_countries: ["US"] },
-      automatic_tax: { enabled: true },
-      shipping_options: shippingOptions,
+      automatic_tax: { enabled: !isTestPromo },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
-    });
+    };
+    if (!isTestPromo) {
+      sessionParams.shipping_options = shippingOptions;
+    }
+    const session = await stripe.checkout.sessions.create(sessionParams);
 
     res.json({ url: session.url });
   } catch (err) {
@@ -1633,6 +1637,7 @@ app.post("/webhook", async (req, res) => {
       }
     }
 
+    const promoNote = session.metadata?.promo_code ? `\n🎟️ Promo: ${session.metadata.promo_code} (${session.metadata.test_discount_applied}% off)` : '';
     const message = `🧾 NEW ORDER
 
 👤 Name: ${shippingName}
@@ -1650,7 +1655,7 @@ ${updated.join("\n")}
 💰 Total: $${items.reduce((sum, item) => {
   const price = item.type === 'printful' ? item.price : 14.99;
   return sum + (price * item.qty);
-}, 0).toFixed(2)} + $5.99 shipping + tax
+}, 0).toFixed(2)} + $5.99 shipping + tax${promoNote}
 `;
 
     transporter.sendMail(
