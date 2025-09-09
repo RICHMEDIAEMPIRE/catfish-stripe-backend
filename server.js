@@ -110,6 +110,44 @@ function applyPercentPromo(unitCents, promo){
   return Math.max(TEST_MIN_CHARGE_CENTS, discounted);
 }
 
+// ===== Stripe → Printful recipient mapper =====
+function parseJSONSafe(s){ try { return JSON.parse(s); } catch { return null; } }
+function stripeToPrintfulRecipient(session){
+  const cd = session?.customer_details || {};
+  const addr = cd.address || session?.shipping_details?.address || {};
+  const name = cd.name || session?.shipping_details?.name || '';
+  const email = cd.email || session?.customer_email || '';
+  const phone = cd.phone || '';
+  const out = {
+    name: name || 'Customer',
+    address1: addr.line1 || addr.address1 || '',
+    address2: addr.line2 || addr.address2 || '',
+    city: addr.city || '',
+    state_code: addr.state || addr.state_code || '',
+    country_code: addr.country || '',
+    zip: addr.postal_code || addr.zip || '',
+    email: email || 'noreply@example.com',
+    phone: phone || ''
+  };
+  if (!out.address1 || !out.city || !out.state_code || !out.country_code || !out.zip){
+    const test = parseJSONSafe(process.env.PRINTFUL_TEST_RECIPIENT || '');
+    if (test){
+      return {
+        name: test.name || out.name,
+        address1: test.address1 || out.address1,
+        address2: test.address2 || out.address2,
+        city: test.city || out.city,
+        state_code: test.state_code || out.state_code,
+        country_code: test.country_code || out.country_code,
+        zip: test.zip || out.zip,
+        email: test.email || out.email,
+        phone: test.phone || out.phone,
+      };
+    }
+  }
+  return out;
+}
+
 // ====== Compact cart item metadata (avoid 500 char limits) ======
 // pack a single item into a tiny pipe-delimited string: t|pid|vid|q|c|s
 function packItem(it) {
@@ -1763,8 +1801,11 @@ app.post("/create-checkout-session", async (req, res) => {
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
-    // Always require shipping address for correct Printful recipient
-    sessionParams.shipping_address_collection = { allowed_countries: ["US","CA"] };
+    // Require shipping address only if cart contains Printful items
+    const hasPrintful = Array.isArray(items) && items.some(i => i.type === 'printful');
+    if (hasPrintful) {
+      sessionParams.shipping_address_collection = { allowed_countries: ["US","CA"] };
+    }
     if (!isTestPromo) {
       sessionParams.shipping_options = shippingOptions;
     }
