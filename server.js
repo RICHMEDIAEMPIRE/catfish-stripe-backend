@@ -151,21 +151,44 @@ const DON_MAX = parseInt(process.env.DONATION_MAX_CENTS || '1000000', 10);
 // Test promo (cart) discount helpers
 const TEST_MIN_CHARGE_CENTS = parseInt(process.env.TEST_MIN_CHARGE_CENTS || '50', 10);
 
-// === Promo codes from env: code1=(name)15 ... code10 ===
-function readPromoCodesFromEnv(env = process.env) {
+// ---- Promo ENV parsing ----
+// Percent codes: code1..code5 in the format (NAME)PERCENT, e.g. (TAKE5)5
+function readPercentPromosFromEnv(env = process.env) {
   const out = [];
   for (let i = 1; i <= 5; i++) {
-    const key = `code${i}`;
-    const v = env[key] ?? env[key.toUpperCase()];
-    if (!v) continue;
-    const m = String(v).trim().match(/^\s*\(([^)]+)\)\s*(\d{1,3})\s*%?\s*$/);
-    if (!m) { console.warn(`Invalid promo ${key}:`, v); continue; }
-    const code = m[1].trim().toLowerCase().replace(/\s+/g,'');
-    const percent = Math.min(100, Math.max(0, parseInt(m[2],10) || 0));
+    const k = `code${i}`;
+    const raw = env[k] ?? env[k?.toUpperCase?.()];
+    if (!raw) continue;
+    const m = String(raw).match(/\(([^)]+)\)\s*(\d{1,3})/);
+    if (!m) continue;
+    const code = m[1].trim();
+    const percent = Math.min(100, Math.max(0, parseInt(m[2], 10) || 0));
+    if (!code || percent <= 0) continue;
     out.push({ code, percent });
   }
-  // dedupe last-wins
-  return [...new Map(out.map(p => [p.code, p])).values()];
+  return [...new Map(out.map(p => [p.code.toLowerCase(), p])).values()];
+}
+
+// Special flat-50 override: FLAT50_CODE="(take5)0" (or any name; percent ignored)
+function readFlat50Override(env = process.env) {
+  const raw = env.FLAT50_CODE ?? env["flat50_code"];
+  if (!raw) return null;
+  const m = String(raw).match(/\(([^)]+)\)\s*0/);
+  if (!m) return null;
+  const code = m[1].trim();
+  if (!code) return null;
+  return { code };
+}
+
+function isFlat50For(codeRaw) {
+  if (!codeRaw) return false;
+  const flat = readFlat50Override();
+  return !!(flat && flat.code.toLowerCase() === String(codeRaw).trim().toLowerCase());
+}
+
+// Legacy wrapper for backward compatibility
+function readPromoCodesFromEnv(env = process.env) {
+  return readPercentPromosFromEnv(env);
 }
 
 // Legacy PROMO_MAP - now unused, replaced by readPromoCodesFromEnv() calls
@@ -1801,31 +1824,36 @@ app.post('/api/promo/clear', corsAllow, (_req, res) => {
 });
 
 // Robust validator: parse env codes, case-insensitive, tolerant of spaces (code1..code5)
-app.post('/api/promo/validate', corsAllow, (req, res) => {
+// DEBUG: confirm server sees env + detection
+app.get("/admin/promo/debug", corsAllow, (req, res) => {
+  const q = (req.query.code || "").toString();
+  const flat = readFlat50Override();
+  const percentList = readPercentPromosFromEnv();
+  res.json({
+    ok: true,
+    flat50_env: flat?.code || null,
+    percent_codes: percentList,
+    query_code: q || null,
+    isFlat50: q ? isFlat50For(q) : null
+  });
+});
+
+app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
   try {
-    console.log('Validate request body:', req.body);
-    console.log('Validate request headers:', req.headers);
-    const input = String(req.body?.code || '').trim().toLowerCase();
-    console.log('Parsed input code:', input);
-    
-    const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
-    console.log('FLAT50_CODE env:', process.env.FLAT50_CODE, 'parsed:', flat50);
-    
-    if (flat50 && input === flat50){
-      console.log('FLAT50 match found');
-      return res.json({ ok:true, code: flat50, percent: 0, minCents: 50, mode: 'flat50' });
+    const given = String(req.body?.code || '').trim();
+    if (!given) return res.status(400).json({ ok:false, error:"missing_code" });
+
+    // flat-50 override wins
+    if (isFlat50For(given)) {
+      return res.json({ ok:true, code: given, percent: 0, mode: "flat50" });
     }
-    
-    const promos = readPromoCodesFromEnv();
-    console.log('Available promos:', promos);
-    const found = promos.find(p => p.code === input.replace(/\s+/g,''));
-    console.log('Found promo:', found);
-    
-    if (!found) {
-      console.log('No promo found for input:', input);
-      return res.status(404).json({ ok:false });
-    }
-    return res.json({ ok:true, code: found.code, percent: found.percent, minCents: 50 });
+
+    // then percent codes (code1..code5)
+    const list = readPercentPromosFromEnv();
+    const hit = list.find(p => p.code.toLowerCase() === given.toLowerCase());
+    if (hit) return res.json({ ok:true, code: hit.code, percent: hit.percent, minCents: 50 });
+
+    return res.status(404).json({ ok:false });
   } catch (e) {
     console.error('Validate error:', e);
     return res.status(500).json({ ok:false, error: e.message });
@@ -2197,8 +2225,7 @@ app.post("/create-checkout-session", async (req, res) => {
     // Create line items with dynamic pricing based on product type
     const line_items = [];
     const activePromo = getActivePromo(req);
-    const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
-    const isFlat50 = flat50 && (promoCode === flat50 || activePromo?.code === flat50);
+    const isFlat50Override = isFlat50For(promoCode) || isFlat50For(activePromo?.code);
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
@@ -2235,7 +2262,7 @@ app.post("/create-checkout-session", async (req, res) => {
             console.warn('Variant fetch failed, using provided price:', e.message);
           }
         }
-        priceInCents = isFlat50 ? 50 : priceAfterPromo(priceInCents, activePromo?.percent);
+        priceInCents = isFlat50Override ? 50 : priceAfterPromo(priceInCents, activePromo?.percent);
         if (!priceInCents || priceInCents < TEST_MIN_CHARGE_CENTS) {
           return res.status(400).json({ error: `Printful variant price invalid for variant ${variantId || 'unknown'} (computed ${priceInCents}c).` });
         }
@@ -2259,8 +2286,8 @@ app.post("/create-checkout-session", async (req, res) => {
         });
       } else {
         // Sunglasses product - use existing hardcoded pricing
-        let priceInCents = isFlat50 ? 50 : 1499;
-        if (!isFlat50) priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
+        let priceInCents = isFlat50Override ? 50 : 1499;
+        if (!isFlat50Override) priceInCents = priceAfterPromo(priceInCents, activePromo?.percent);
         line_items.push({
         price_data: {
           currency: "usd",
@@ -2278,8 +2305,8 @@ app.post("/create-checkout-session", async (req, res) => {
         {
           shipping_rate_data: {
             type: "fixed_amount",
-            fixed_amount: { amount: isFlat50 ? 0 : 599, currency: "usd" },
-            display_name: isFlat50 ? "Free Shipping (Promo)" : "Flat Rate Shipping",
+            fixed_amount: { amount: isFlat50Override ? 0 : 599, currency: "usd" },
+            display_name: isFlat50Override ? "Free Shipping (Promo)" : "Flat Rate Shipping",
           },
         },
     ];
@@ -2298,9 +2325,9 @@ app.post("/create-checkout-session", async (req, res) => {
       metadata: {
         ...metadata,
         promo_code: activePromo?.code || '',
-        test_discount_applied: String(isFlat50 ? 'flat50' : (activePromo?.percent || 0))
+        test_discount_applied: String(isFlat50Override ? 'flat50' : (activePromo?.percent || 0))
       },
-      automatic_tax: { enabled: false },
+      automatic_tax: { enabled: !isFlat50Override },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
