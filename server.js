@@ -213,10 +213,21 @@ async function getOrderByExternalId(externalId) {
   return data || null;
 }
 
-async function upsertOrderRecord({ external_id, pf_order_id, status, meta, pi_id, charge_id }) {
-  const payload = { external_id, pf_order_id, status, meta, updated_at: new Date().toISOString() };
-  if (pi_id) payload.pi_id = pi_id;
-  if (charge_id) payload.charge_id = charge_id;
+async function upsertOrderRecord(record) {
+  const payload = {
+    external_id: record.external_id,
+    pf_order_id: record.pf_order_id ?? null,
+    status: record.status ?? null,
+    meta: record.meta ?? null,
+    pi_id: record.pi_id ?? null,
+    charge_id: record.charge_id ?? null,
+    amount_captured: record.amount_captured ?? null,
+    amount_refunded: record.amount_refunded ?? null,
+    currency: record.currency ?? null,
+    last_event_type: record.last_event_type ?? null,
+    cancel_reason: record.cancel_reason ?? null,
+    updated_at: new Date().toISOString()
+  };
   const { error } = await supabase.from("printful_orders").upsert(payload, { onConflict: "external_id" });
   if (error) console.error("upsertOrderRecord error:", error);
 }
@@ -269,7 +280,8 @@ async function notifyOps(to, subject, html) {
 // === Printful helpers for create + confirm ===
 const PF_BASE = "https://api.printful.com";
 
-async function pfFetch(path, opts = {}) {
+// Exponential backoff for 429/5xx with jitter
+async function pfFetch(path, opts = {}, tries = 5, baseDelay = 400) {
   const storeId = process.env.PRINTFUL_STORE_ID;
   const url = path.includes("?") ? `${PF_BASE}${path}&store_id=${storeId}` : `${PF_BASE}${path}?store_id=${storeId}`;
   const headers = {
@@ -277,16 +289,32 @@ async function pfFetch(path, opts = {}) {
     "Content-Type": "application/json",
     ...(opts.headers || {})
   };
-  const res = await fetch(url, { ...opts, headers });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
+
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const res = await fetch(url, { ...opts, headers });
+    let json = {};
+    try { json = await res.json(); } catch {}
+
+    if (res.ok) return json;
+
+    const status = res.status;
     const msg = json?.error?.message || json?.error || res.statusText;
-    const err = new Error(`Printful ${path} ${res.status}: ${msg}`);
-    err.status = res.status;
+
+    // Retry on rate limit / transient errors
+    if ((status === 429 || (status >= 500 && status < 600)) && attempt < tries) {
+      const jitter = Math.floor(Math.random() * 150);
+      const delay = Math.min(4000, baseDelay * Math.pow(2, attempt - 1)) + jitter;
+      await new Promise(r => setTimeout(r, delay));
+      continue;
+    }
+
+    const err = new Error(`Printful ${path} ${status}: ${msg}`);
+    err.status = status;
     err.body = json;
     throw err;
   }
-  return json;
+
+  throw new Error("Printful request failed after retries");
 }
 
 async function printfulCreateOrderDraft(payload) {
@@ -2447,9 +2475,13 @@ ${pfLines ? `\n${pfLines}` : ''}
           // Capture PI and charge for refund mapping
           let piId = session.payment_intent || null;
           let chargeId = null;
+          let amountCaptured = null;
+          let currency = (session.currency || "usd").toLowerCase();
           try {
             if (piId) {
               const pi = await stripe.paymentIntents.retrieve(piId, { expand: ["latest_charge"] });
+              amountCaptured = Number(pi.amount_received ?? pi.amount ?? null);
+              currency = (pi.currency || currency || "usd").toLowerCase();
               chargeId = (pi.latest_charge && typeof pi.latest_charge === "object")
                 ? pi.latest_charge.id
                 : (pi.latest_charge || null);
@@ -2470,7 +2502,10 @@ ${pfLines ? `\n${pfLines}` : ''}
                   status: "confirmed",
                   meta: { resumed: true },
                   pi_id: piId,
-                  charge_id: chargeId
+                  charge_id: chargeId,
+                  amount_captured: amountCaptured,
+                  currency: currency,
+                  last_event_type: "checkout.session.completed"
                 });
               } catch (e) {
                 console.error("Re-confirm existing PF order failed:", e?.message || e);
@@ -2500,7 +2535,11 @@ ${pfLines ? `\n${pfLines}` : ''}
                 status: "draft",
                 meta: { create_res: created },
                 pi_id: piId,
-                charge_id: chargeId
+                charge_id: chargeId,
+                amount_captured: amountCaptured,
+                amount_refunded: 0,
+                currency: currency,
+                last_event_type: "checkout.session.completed"
               });
               globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
             } catch (e) {
@@ -2527,7 +2566,11 @@ ${pfLines ? `\n${pfLines}` : ''}
                   status: "confirmed",
                   meta: { confirm: true },
                   pi_id: piId,
-                  charge_id: chargeId
+                  charge_id: chargeId,
+                  amount_captured: amountCaptured,
+                  amount_refunded: 0,
+                  currency: currency,
+                  last_event_type: "checkout.session.completed"
                 });
                 console.log(`Printful order ${pfOrderId} confirmed`);
               } catch (e) {
@@ -2557,7 +2600,7 @@ ${pfLines ? `\n${pfLines}` : ''}
     console.log("✅ Inventory updated from payment");
   }
 
-  // ---- Refund completed: cancel Printful order if possible ----
+  // ---- Refund completed: cancel only on full refund ----
   if (event.type === "charge.refunded") {
     const firstTime = await markStripeEventProcessedOnce(event.id, event.type);
     if (!firstTime) return res.status(200).send("[ok] duplicate refund event ignored");
@@ -2565,26 +2608,59 @@ ${pfLines ? `\n${pfLines}` : ''}
     const charge = event.data.object;
     const chargeId = charge.id;
     const piId = charge.payment_intent || null;
-
+    
+    function getRefundSnapshotFromCharge(charge) {
+      const amountCaptured = Number(charge.amount_captured ?? charge.amount ?? 0);
+      const amountRefunded = Number(charge.amount_refunded ?? 0);
+      const currency = (charge.currency || "usd").toLowerCase();
+      const full = amountCaptured > 0 && amountRefunded >= amountCaptured;
+      return { amountCaptured, amountRefunded, currency, full };
+    }
+    
+    const snap = getRefundSnapshotFromCharge(charge);
     const rec = await findOrderByPIorCharge({ pi: piId, charge: chargeId });
     if (!rec?.pf_order_id) return res.status(200).send("[ok] no linked order");
 
     try {
-      const live = await printfulGetOrder(rec.pf_order_id);
-      const status = (live?.result?.status || "").toLowerCase();
-      if (!/fulfilled|shipped|canceled/.test(status)) {
-        await printfulCancelOrder(rec.pf_order_id);
+      if (snap.full) {
+        const live = await printfulGetOrder(rec.pf_order_id);
+        const status = (live?.result?.status || "").toLowerCase();
+        if (!/fulfilled|shipped|canceled/.test(status)) {
+          await printfulCancelOrder(rec.pf_order_id);
+        }
+        await upsertOrderRecord({
+          external_id: rec.external_id,
+          pf_order_id: rec.pf_order_id,
+          status: "canceled",
+          amount_captured: snap.amountCaptured,
+          amount_refunded: snap.amountRefunded,
+          currency: snap.currency,
+          last_event_type: event.type,
+          cancel_reason: "stripe_full_refund"
+        });
+      } else {
+        await upsertOrderRecord({
+          external_id: rec.external_id,
+          pf_order_id: rec.pf_order_id,
+          status: rec.status,
+          amount_captured: snap.amountCaptured,
+          amount_refunded: snap.amountRefunded,
+          currency: snap.currency,
+          last_event_type: event.type,
+          cancel_reason: null
+        });
+        await notifyOps("rich@richmediaempire.com",
+          `[CatfishEmpire] Partial refund detected for ${rec.external_id}`,
+          `<p>amount_captured: ${(snap.amountCaptured/100).toFixed(2)} ${snap.currency.toUpperCase()}<br>
+             amount_refunded: ${(snap.amountRefunded/100).toFixed(2)} ${snap.currency.toUpperCase()}</p>
+           <p>No auto-cancel performed (partial refund). If you wish to cancel, use:</p>
+           <pre>POST /admin/printful/cancel {"external_id":"${rec.external_id}"}</pre>`);
       }
-      await cancelOrderRecord({
-        external_id: rec.external_id,
-        pf_order_id: rec.pf_order_id,
-        refund_status: "charge.refunded"
-      });
     } catch (e) {
-      console.error("Auto-cancel on refund failed:", e?.message || e);
+      console.error("Refund handler failed:", e?.message || e);
       await notifyOps("rich@richmediaempire.com",
-        `[CatfishEmpire] Auto-cancel failed for ${rec.external_id}`,
-        `<p>Stripe event: charge.refunded</p><p>pf_order_id: ${rec.pf_order_id}</p><pre>${(e?.message || e).toString()}</pre>`);
+        `[CatfishEmpire] Refund handler error for ${rec.external_id}`,
+        `<pre>${(e?.message || e).toString()}</pre>`);
     }
     return res.status(200).send("[ok]");
   }
