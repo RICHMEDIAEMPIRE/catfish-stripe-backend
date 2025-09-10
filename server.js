@@ -192,6 +192,53 @@ function priceAfterPromo(cents, promoPercent){
 
 // Removed duplicate - using readPromoCodesFromEnv() above
 
+// === Printful helpers for create + confirm ===
+const PF_BASE = "https://api.printful.com";
+
+async function pfFetch(path, opts = {}) {
+  const storeId = process.env.PRINTFUL_STORE_ID;
+  const url = path.includes("?") ? `${PF_BASE}${path}&store_id=${storeId}` : `${PF_BASE}${path}?store_id=${storeId}`;
+  const headers = {
+    Authorization: `Bearer ${process.env.PRINTFUL_API_KEY}`,
+    "Content-Type": "application/json",
+    ...(opts.headers || {})
+  };
+  const res = await fetch(url, { ...opts, headers });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = json?.error?.message || json?.error || res.statusText;
+    const err = new Error(`Printful ${path} ${res.status}: ${msg}`);
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
+  return json;
+}
+
+async function printfulCreateOrderDraft(payload) {
+  return pfFetch(`/orders`, { method: "POST", body: JSON.stringify({ ...payload, confirm: false }) });
+}
+
+async function printfulConfirmOrder(orderId, { maxTries = 6, delayMs = 1500 } = {}) {
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      return await pfFetch(`/orders/${orderId}/confirm`, { method: "POST" });
+    } catch (err) {
+      const status = err.status || 0;
+      const msg = (err.body?.error?.message || "").toLowerCase();
+      const calc = msg.includes("cost") || msg.includes("calculating") || msg.includes("calculate");
+      const already = msg.includes("already confirmed") || msg.includes("status pending") || msg.includes("pending");
+      if (already) return { result: { id: orderId, status: "pending" } };
+      if (calc && attempt < maxTries) {
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Printful confirm failed after retries");
+}
+
 // ===== Stripe → Printful recipient mapper =====
 function parseJSONSafe(s){ try { return JSON.parse(s); } catch { return null; } }
 function stripeToPrintfulRecipient(session){
@@ -2239,12 +2286,26 @@ ${pfLines ? `\n${pfLines}` : ''}
           globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'Recipient incomplete', recipient };
         } else {
           const external_id = mkPfExternalId(session.id || session.payment_intent || Date.now());
-          const body = { external_id, confirm:false, recipient, items: pfItems };
-          globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body };
-          const pfResp = await pfPost('/orders', body);
-          globalThis.__LAST_PF_RESPONSE__ = { status: pfResp.status, text: pfResp.text };
-          if (!pfResp.ok) console.error('Printful order create failed:', pfResp.status, pfResp.text);
-          else console.log('Printful order created (draft). Status:', pfResp.status);
+          const orderPayload = { external_id, confirm:false, recipient, items: pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity })) };
+          globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
+          
+          // 1) Create draft
+          const created = await printfulCreateOrderDraft(orderPayload);
+          const pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
+          globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
+          
+          // 2) Auto confirm if enabled
+          const autoConfirm = String(process.env.PRINTFUL_AUTO_CONFIRM || "").toLowerCase() === "true";
+          if (autoConfirm && pfOrderId) {
+            try {
+              const confirmed = await printfulConfirmOrder(pfOrderId);
+              console.log(`Printful order ${pfOrderId} confirmed:`, confirmed?.result?.status || 'confirmed');
+            } catch (e) {
+              console.error("Printful confirm failed (will remain draft):", e.message);
+            }
+          } else {
+            console.log('Printful order created (draft). Status: 200, ID:', pfOrderId);
+          }
         }
       } else {
         globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text: token ? 'No pfItems' : 'No PRINTFUL_API_KEY' };
