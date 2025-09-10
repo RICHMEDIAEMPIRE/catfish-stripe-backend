@@ -186,6 +186,12 @@ function isFlat50For(codeRaw) {
   return !!(flat && flat.code.toLowerCase() === String(codeRaw).trim().toLowerCase());
 }
 
+// --- ONE-DOLLAR override: TAKE5 -> $1 total, free shipping, no tax ---
+function isOneDollarCode(codeRaw) {
+  const c = String(codeRaw || "").trim().toLowerCase();
+  return c === "take5";
+}
+
 // Legacy wrapper for backward compatibility
 function readPromoCodesFromEnv(env = process.env) {
   return readPercentPromosFromEnv(env);
@@ -342,6 +348,11 @@ async function pfFetch(path, opts = {}, tries = 5, baseDelay = 400) {
 
 async function printfulCreateOrderDraft(payload) {
   return pfFetch(`/orders`, { method: "POST", body: JSON.stringify({ ...payload, confirm: false }) });
+}
+
+// Helper that creates a Printful order CONFIRMED immediately
+async function printfulCreateOrderConfirmed(payload) {
+  return pfFetch(`/orders`, { method: "POST", body: JSON.stringify({ ...payload, confirm: true }) });
 }
 
 async function printfulConfirmOrder(orderId, { maxTries = 6, delayMs = 1500 } = {}) {
@@ -1834,8 +1845,15 @@ app.get("/admin/promo/debug", corsAllow, (req, res) => {
     flat50_env: flat?.code || null,
     percent_codes: percentList,
     query_code: q || null,
-    isFlat50: q ? isFlat50For(q) : null
+    isFlat50: q ? isFlat50For(q) : null,
+    isOneDollar: q ? isOneDollarCode(q) : null
   });
+});
+
+// Quick debug for one-dollar mode
+app.get("/admin/promo/onedollar", corsAllow, (req, res) => {
+  const code = String(req.query.code || "").trim();
+  res.json({ ok:true, query: code || null, isOneDollar: isOneDollarCode(code) });
 });
 
 app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
@@ -1843,7 +1861,12 @@ app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
     const given = String(req.body?.code || '').trim();
     if (!given) return res.status(400).json({ ok:false, error:"missing_code" });
 
-    // flat-50 override wins
+    // ONE-DOLLAR override wins first (TAKE5 -> $1 total)
+    if (isOneDollarCode(given)) {
+      return res.json({ ok:true, code: given, percent: 0, mode: "oneDollar" });
+    }
+
+    // flat-50 override second
     if (isFlat50For(given)) {
       return res.json({ ok:true, code: given, percent: 0, mode: "flat50" });
     }
@@ -2223,9 +2246,29 @@ app.post("/create-checkout-session", async (req, res) => {
 
   try {
     // Create line items with dynamic pricing based on product type
-    const line_items = [];
     const activePromo = getActivePromo(req);
-    const isFlat50Override = isFlat50For(promoCode) || isFlat50For(activePromo?.code);
+    const isOneDollarOverride = isOneDollarCode(promoCode) || isOneDollarCode(activePromo?.code);
+    const isFlat50Override = !isOneDollarOverride && (isFlat50For(promoCode) || isFlat50For(activePromo?.code));
+    
+    // Store real cart items in metadata for webhook Printful order creation
+    const printfulItems = items
+      .filter(it => it.type === 'printful' && it.variantId)
+      .map(it => ({ sync_variant_id: Number(it.variantId), quantity: Math.max(1, Number(it.qty) || 1) }));
+    
+    let line_items = [];
+    
+    if (isOneDollarOverride) {
+      // TAKE5 -> single $1.00 line item
+      const orderSummaryName = items.length ? `${items[0].name || 'Item'} +${Math.max(0, items.length-1)} more` : "Order";
+      line_items = [{
+        quantity: 1,
+        price_data: {
+          currency: "usd",
+          unit_amount: 100,
+          product_data: { name: `TAKE5 Test — ${orderSummaryName}` }
+        }
+      }];
+    } else {
     for (const item of items) {
       if (item.type === 'printful') {
         let variantId = item.variantId || item.variant_id;
@@ -2298,6 +2341,7 @@ app.post("/create-checkout-session", async (req, res) => {
         });
       }
     }
+    }
 
     // Flat shipping rate for all orders (promo does not affect shipping)
     const isTestPromo = false;
@@ -2311,10 +2355,13 @@ app.post("/create-checkout-session", async (req, res) => {
         },
     ];
 
-    // Build compact metadata
+    // Build compact metadata + store real cart for webhook Printful order
     const metadata = {};
     (items || []).forEach((it, idx) => { metadata[`i${idx}`] = packItem(it); });
     metadata.cart_count = String(items ? items.length : 0);
+    metadata.promo_code = activePromo?.code || promoCode || '';
+    metadata.mode = isOneDollarOverride ? 'oneDollar' : (isFlat50Override ? 'flat50' : 'normal');
+    metadata.order_cart = JSON.stringify({ items: printfulItems });
     if (shippingState) metadata.shippingState = String(shippingState);
 
     const sessionParams = {
@@ -2322,12 +2369,8 @@ app.post("/create-checkout-session", async (req, res) => {
       mode: "payment",
       customer_creation: "always",
       line_items,
-      metadata: {
-        ...metadata,
-        promo_code: activePromo?.code || '',
-        test_discount_applied: String(isFlat50Override ? 'flat50' : (activePromo?.percent || 0))
-      },
-      automatic_tax: { enabled: !isFlat50Override },
+      metadata,
+      automatic_tax: { enabled: !isOneDollarOverride && !isFlat50Override },
       success_url: `${process.env.CLIENT_URL}/success.html`,
       cancel_url: `${process.env.CLIENT_URL}/cart.html`,
     };
@@ -2336,7 +2379,17 @@ app.post("/create-checkout-session", async (req, res) => {
     if (hasPrintful) {
       sessionParams.shipping_address_collection = { allowed_countries: ["US","CA"] };
     }
-    sessionParams.shipping_options = shippingOptions;
+    if (isOneDollarOverride) {
+      sessionParams.shipping_options = [{
+        shipping_rate_data: {
+          display_name: "Free Shipping — TAKE5 Test",
+          type: "fixed_amount",
+          fixed_amount: { amount: 0, currency: "usd" }
+        }
+      }];
+    } else {
+      sessionParams.shipping_options = shippingOptions;
+    }
     // Validate multiple items have valid unit amounts
     for (const li of line_items) {
       const amt = li?.price_data?.unit_amount;
@@ -2543,55 +2596,39 @@ ${pfLines ? `\n${pfLines}` : ''}
             }
             globalThis.__LAST_PF_RESPONSE__ = { status:'REPLAY', text:'Existing order acknowledged', orderId: existing.pf_order_id };
           } else {
-            // 1) Create draft
-            let created, pfOrderId;
+            // Get real cart items from metadata (works even when Stripe charged $1)
+            let itemsFromMeta = [];
             try {
-              const orderPayload = {
-                external_id,
-                confirm: false,
-                update_existing: false,
-                recipient,
-                items: pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity }))
-              };
-              globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
-              created = await printfulCreateOrderDraft(orderPayload);
-              pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
-              await upsertOrderRecord({
-                external_id,
-                pf_order_id: pfOrderId,
-                status: "draft",
-                meta: { create_res: created },
-                pi_id: piId,
-                charge_id: chargeId,
-                amount_captured: amountCaptured,
-                amount_refunded: 0,
-                currency: currency,
-                last_event_type: "checkout.session.completed"
-              });
-              globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
+              if (session.metadata?.order_cart) {
+                const parsed = JSON.parse(session.metadata.order_cart);
+                if (Array.isArray(parsed?.items)) itemsFromMeta = parsed.items;
+              }
             } catch (e) {
-              console.error("Printful create draft failed:", e?.message || e);
-              await upsertOrderRecord({
-                external_id,
-                pf_order_id: null,
-                status: "failed",
-                meta: { error: e?.message || String(e) }
-              });
-              await notifyOps("rich@richmediaempire.com",
-                opsEmailSubject(external_id, "Create draft failed"),
-                `<pre>${(e?.message || e).toString()}</pre>`);
-              globalThis.__LAST_PF_RESPONSE__ = { status:'EXCEPTION', text: String(e?.message||e) };
+              console.warn("order_cart metadata parse failed:", e?.message || e);
             }
-            
-            // 2) Auto confirm if enabled
-            if (autoConfirm && pfOrderId) {
+
+            if (!itemsFromMeta.length) {
+              console.error("No Printful items found in metadata; order will not be created.");
+              globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'No items in metadata' };
+            } else {
+              // Create CONFIRMED Printful order (no draft, immediate to production)
+              let created, pfOrderId;
               try {
-                await printfulConfirmOrder(pfOrderId);
+                const orderPayload = {
+                  external_id,
+                  confirm: true,
+                  update_existing: false,
+                  recipient,
+                  items: itemsFromMeta.map(x => ({ sync_variant_id: Number(x.sync_variant_id), quantity: Number(x.quantity) }))
+                };
+                globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
+                created = await printfulCreateOrderConfirmed(orderPayload);
+                pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
                 await upsertOrderRecord({
                   external_id,
                   pf_order_id: pfOrderId,
                   status: "confirmed",
-                  meta: { confirm: true },
+                  meta: { create_res: created },
                   pi_id: piId,
                   charge_id: chargeId,
                   amount_captured: amountCaptured,
@@ -2599,23 +2636,26 @@ ${pfLines ? `\n${pfLines}` : ''}
                   currency: currency,
                   last_event_type: "checkout.session.completed"
                 });
-                console.log(`Printful order ${pfOrderId} confirmed`);
+                console.log(`Printful order ${pfOrderId} created and confirmed immediately`);
+                globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
               } catch (e) {
-                console.error("Printful confirm failed (stays draft):", e?.message || e);
+                console.error("Printful create (confirm=true) failed:", e?.message || e);
                 await upsertOrderRecord({
                   external_id,
-                  pf_order_id: pfOrderId,
-                  status: "draft",
-                  meta: { confirm_error: e?.message || String(e) }
+                  pf_order_id: null,
+                  status: "failed",
+                  meta: { error: e?.message || String(e) },
+                  pi_id: piId,
+                  charge_id: chargeId,
+                  amount_captured: amountCaptured,
+                  currency: currency,
+                  last_event_type: "checkout.session.completed"
                 });
                 await notifyOps("rich@richmediaempire.com",
-                  opsEmailSubject(external_id, "Confirm failed"),
-                  `<p>Order stayed in DRAFT. You can retry in Admin:</p>
-                   <pre>POST /admin/printful/reconfirm { "external_id": "${external_id}" }</pre>
-                   <pre>${(e?.message || e).toString()}</pre>`);
+                  opsEmailSubject(external_id, "Printful create failed"),
+                  `<pre>${(e?.message || e).toString()}</pre>`);
+                globalThis.__LAST_PF_RESPONSE__ = { status:'EXCEPTION', text: String(e?.message||e) };
               }
-            } else {
-              console.log('Printful order created (draft). ID:', pfOrderId);
             }
           }
         }
