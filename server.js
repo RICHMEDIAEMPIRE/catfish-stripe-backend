@@ -192,6 +192,50 @@ function priceAfterPromo(cents, promoPercent){
 
 // Removed duplicate - using readPromoCodesFromEnv() above
 
+// ===== Idempotency & order-record helpers =====
+async function markStripeEventProcessedOnce(eventId, type) {
+  const { error } = await supabase.from("stripe_events").insert({ id: eventId, type });
+  if (error) {
+    if (String(error.code) === "23505") return false; // unique violation
+    console.error("stripe_events insert error:", error);
+    return false; // safe default
+  }
+  return true;
+}
+
+async function getOrderByExternalId(externalId) {
+  const { data, error } = await supabase
+    .from("printful_orders")
+    .select("*")
+    .eq("external_id", externalId)
+    .maybeSingle();
+  if (error) { console.error("getOrderByExternalId error:", error); }
+  return data || null;
+}
+
+async function upsertOrderRecord({ external_id, pf_order_id, status, meta }) {
+  const payload = { external_id, pf_order_id, status, meta, updated_at: new Date().toISOString() };
+  const { error } = await supabase.from("printful_orders").upsert(payload, { onConflict: "external_id" });
+  if (error) console.error("upsertOrderRecord error:", error);
+}
+
+function opsEmailSubject(external_id, suffix) {
+  return `[CatfishEmpire] Printful order ${external_id}: ${suffix}`;
+}
+
+async function notifyOps(to, subject, html) {
+  try {
+    await transporter.sendMail({
+      from: `"Catfish Empire" <${process.env.SMTP_USER}>`,
+      to,
+      subject,
+      html
+    });
+  } catch (e) {
+    console.error("notifyOps failed:", e?.message || e);
+  }
+}
+
 // === Printful helpers for create + confirm ===
 const PF_BASE = "https://api.printful.com";
 
@@ -237,6 +281,10 @@ async function printfulConfirmOrder(orderId, { maxTries = 6, delayMs = 1500 } = 
     }
   }
   throw new Error("Printful confirm failed after retries");
+}
+
+async function printfulGetOrder(orderId) {
+  return pfFetch(`/orders/${orderId}`, { method: "GET" });
 }
 
 // ===== Stripe → Printful recipient mapper =====
@@ -1821,6 +1869,45 @@ app.get('/admin/printful/last', cors(), async (req, res) => {
   res.json({ ...LAST_PF_ORDER });
 });
 
+// Admin endpoint to re-confirm by external_id (recover stuck drafts)
+app.post("/admin/printful/reconfirm", cors(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const external_id = String(req.body?.external_id || "").trim();
+    if (!external_id) return res.status(400).json({ ok:false, error:"missing external_id" });
+
+    const rec = await getOrderByExternalId(external_id);
+    if (!rec?.pf_order_id) return res.status(404).json({ ok:false, error:"order_not_found" });
+
+    const confirmRes = await printfulConfirmOrder(rec.pf_order_id);
+    await upsertOrderRecord({
+      external_id,
+      pf_order_id: rec.pf_order_id,
+      status: "confirmed",
+      meta: { reconfirmed_at: new Date().toISOString(), confirmRes }
+    });
+
+    return res.json({ ok:true, external_id, pf_order_id: rec.pf_order_id });
+  } catch (e) {
+    console.error("admin reconfirm error:", e?.message || e);
+    return res.status(500).json({ ok:false, error: e?.message || "reconfirm_failed" });
+  }
+});
+
+// Debug a specific order quickly
+app.get("/admin/printful/order/:external_id", cors(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const external_id = req.params.external_id;
+    const rec = await getOrderByExternalId(external_id);
+    if (!rec?.pf_order_id) return res.status(404).json({ ok:false });
+    const live = await printfulGetOrder(rec.pf_order_id);
+    return res.json({ ok:true, record: rec, live });
+  } catch (e) {
+    return res.status(500).json({ ok:false, error: e?.message || String(e), record: rec });
+  }
+});
+
 // Admin/Debug: token bypass to view last PF payload/response
 const DEBUG_TOKEN = process.env.ADMIN_DEBUG_TOKEN || '';
 app.get('/admin/printful/debug', cors(), async (req, res) => {
@@ -2164,7 +2251,13 @@ app.post("/webhook", async (req, res) => {
   }
 
   if (event.type === "checkout.session.completed") {
+    const firstTime = await markStripeEventProcessedOnce(event.id, event.type);
+    if (!firstTime) {
+      return res.status(200).send("[ok] duplicate event ignored");
+    }
+
     const session = event.data.object;
+    const stripeCheckoutId = session.id;
 
     const isDonation = session.metadata?.intent === "donation";
     if (isDonation) {
@@ -2285,26 +2378,92 @@ ${pfLines ? `\n${pfLines}` : ''}
           console.warn('SKIP Printful: recipient incomplete', recipient);
           globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'Recipient incomplete', recipient };
         } else {
-          const external_id = mkPfExternalId(session.id || session.payment_intent || Date.now());
-          const orderPayload = { external_id, confirm:false, recipient, items: pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity })) };
-          globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
-          
-          // 1) Create draft
-          const created = await printfulCreateOrderDraft(orderPayload);
-          const pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
-          globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
-          
-          // 2) Auto confirm if enabled
+          const external_id = stripeCheckoutId;
           const autoConfirm = String(process.env.PRINTFUL_AUTO_CONFIRM || "").toLowerCase() === "true";
-          if (autoConfirm && pfOrderId) {
-            try {
-              const confirmed = await printfulConfirmOrder(pfOrderId);
-              console.log(`Printful order ${pfOrderId} confirmed:`, confirmed?.result?.status || 'confirmed');
-            } catch (e) {
-              console.error("Printful confirm failed (will remain draft):", e.message);
+          
+          // Replay safety: if order exists for this external_id, don't recreate
+          const existing = await getOrderByExternalId(external_id);
+          if (existing?.pf_order_id) {
+            if (autoConfirm && (existing.status !== "confirmed" && existing.status !== "pending")) {
+              try {
+                await printfulConfirmOrder(existing.pf_order_id);
+                await upsertOrderRecord({
+                  external_id,
+                  pf_order_id: existing.pf_order_id,
+                  status: "confirmed",
+                  meta: { resumed: true }
+                });
+              } catch (e) {
+                console.error("Re-confirm existing PF order failed:", e?.message || e);
+                await notifyOps("rich@richmediaempire.com",
+                  opsEmailSubject(external_id, "Re-confirm failed"),
+                  `<pre>${(e?.message || e).toString()}</pre>`);
+              }
             }
+            globalThis.__LAST_PF_RESPONSE__ = { status:'REPLAY', text:'Existing order acknowledged', orderId: existing.pf_order_id };
           } else {
-            console.log('Printful order created (draft). Status: 200, ID:', pfOrderId);
+            // 1) Create draft
+            let created, pfOrderId;
+            try {
+              const orderPayload = {
+                external_id,
+                confirm: false,
+                update_existing: false,
+                recipient,
+                items: pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity }))
+              };
+              globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
+              created = await printfulCreateOrderDraft(orderPayload);
+              pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
+              await upsertOrderRecord({
+                external_id,
+                pf_order_id: pfOrderId,
+                status: "draft",
+                meta: { create_res: created }
+              });
+              globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
+            } catch (e) {
+              console.error("Printful create draft failed:", e?.message || e);
+              await upsertOrderRecord({
+                external_id,
+                pf_order_id: null,
+                status: "failed",
+                meta: { error: e?.message || String(e) }
+              });
+              await notifyOps("rich@richmediaempire.com",
+                opsEmailSubject(external_id, "Create draft failed"),
+                `<pre>${(e?.message || e).toString()}</pre>`);
+              globalThis.__LAST_PF_RESPONSE__ = { status:'EXCEPTION', text: String(e?.message||e) };
+            }
+            
+            // 2) Auto confirm if enabled
+            if (autoConfirm && pfOrderId) {
+              try {
+                await printfulConfirmOrder(pfOrderId);
+                await upsertOrderRecord({
+                  external_id,
+                  pf_order_id: pfOrderId,
+                  status: "confirmed",
+                  meta: { confirm: true }
+                });
+                console.log(`Printful order ${pfOrderId} confirmed`);
+              } catch (e) {
+                console.error("Printful confirm failed (stays draft):", e?.message || e);
+                await upsertOrderRecord({
+                  external_id,
+                  pf_order_id: pfOrderId,
+                  status: "draft",
+                  meta: { confirm_error: e?.message || String(e) }
+                });
+                await notifyOps("rich@richmediaempire.com",
+                  opsEmailSubject(external_id, "Confirm failed"),
+                  `<p>Order stayed in DRAFT. You can retry in Admin:</p>
+                   <pre>POST /admin/printful/reconfirm { "external_id": "${external_id}" }</pre>
+                   <pre>${(e?.message || e).toString()}</pre>`);
+              }
+            } else {
+              console.log('Printful order created (draft). ID:', pfOrderId);
+            }
           }
         }
       } else {
