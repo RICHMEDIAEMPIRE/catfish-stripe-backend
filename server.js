@@ -213,10 +213,40 @@ async function getOrderByExternalId(externalId) {
   return data || null;
 }
 
-async function upsertOrderRecord({ external_id, pf_order_id, status, meta }) {
+async function upsertOrderRecord({ external_id, pf_order_id, status, meta, pi_id, charge_id }) {
   const payload = { external_id, pf_order_id, status, meta, updated_at: new Date().toISOString() };
+  if (pi_id) payload.pi_id = pi_id;
+  if (charge_id) payload.charge_id = charge_id;
   const { error } = await supabase.from("printful_orders").upsert(payload, { onConflict: "external_id" });
   if (error) console.error("upsertOrderRecord error:", error);
+}
+
+async function findOrderByPIorCharge({ pi, charge }) {
+  if (charge) {
+    const { data, error } = await supabase
+      .from("printful_orders").select("*").eq("charge_id", charge).maybeSingle();
+    if (data) return data;
+  }
+  if (pi) {
+    const { data, error } = await supabase
+      .from("printful_orders").select("*").eq("pi_id", pi).maybeSingle();
+    if (data) return data;
+  }
+  return null;
+}
+
+async function cancelOrderRecord({ external_id, pf_order_id, refund_status }) {
+  const payload = {
+    external_id,
+    pf_order_id,
+    status: "canceled",
+    refund_status: refund_status || "refunded_or_failed",
+    cancelled_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  };
+  const { error } = await supabase.from("printful_orders")
+    .upsert(payload, { onConflict: "external_id" });
+  if (error) console.error("cancelOrderRecord error:", error);
 }
 
 function opsEmailSubject(external_id, suffix) {
@@ -285,6 +315,10 @@ async function printfulConfirmOrder(orderId, { maxTries = 6, delayMs = 1500 } = 
 
 async function printfulGetOrder(orderId) {
   return pfFetch(`/orders/${orderId}`, { method: "GET" });
+}
+
+async function printfulCancelOrder(orderId) {
+  return pfFetch(`/orders/${orderId}/cancel`, { method: "POST" });
 }
 
 // ===== Stripe → Printful recipient mapper =====
@@ -1908,6 +1942,35 @@ app.get("/admin/printful/order/:external_id", cors(), async (req, res) => {
   }
 });
 
+// Admin cancel endpoint (manual recovery)
+app.post("/admin/printful/cancel", cors(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const external_id = String(req.body?.external_id || "").trim();
+    if (!external_id) return res.status(400).json({ ok:false, error:"missing external_id" });
+
+    const rec = await getOrderByExternalId(external_id);
+    if (!rec?.pf_order_id) return res.status(404).json({ ok:false, error:"order_not_found" });
+
+    const live = await printfulGetOrder(rec.pf_order_id);
+    const status = (live?.result?.status || "").toLowerCase();
+    if (/fulfilled|shipped|canceled/.test(status)) {
+      return res.json({ ok:true, external_id, pf_order_id: rec.pf_order_id, message: `No action: status=${status}` });
+    }
+
+    const out = await printfulCancelOrder(rec.pf_order_id);
+    await cancelOrderRecord({
+      external_id: rec.external_id,
+      pf_order_id: rec.pf_order_id,
+      refund_status: "admin_cancel"
+    });
+    return res.json({ ok:true, external_id, pf_order_id: rec.pf_order_id, result: out });
+  } catch (e) {
+    console.error("admin cancel error:", e?.message || e);
+    return res.status(500).json({ ok:false, error: e?.message || "cancel_failed" });
+  }
+});
+
 // Admin/Debug: token bypass to view last PF payload/response
 const DEBUG_TOKEN = process.env.ADMIN_DEBUG_TOKEN || '';
 app.get('/admin/printful/debug', cors(), async (req, res) => {
@@ -2381,6 +2444,20 @@ ${pfLines ? `\n${pfLines}` : ''}
           const external_id = stripeCheckoutId;
           const autoConfirm = String(process.env.PRINTFUL_AUTO_CONFIRM || "").toLowerCase() === "true";
           
+          // Capture PI and charge for refund mapping
+          let piId = session.payment_intent || null;
+          let chargeId = null;
+          try {
+            if (piId) {
+              const pi = await stripe.paymentIntents.retrieve(piId, { expand: ["latest_charge"] });
+              chargeId = (pi.latest_charge && typeof pi.latest_charge === "object")
+                ? pi.latest_charge.id
+                : (pi.latest_charge || null);
+            }
+          } catch (e) {
+            console.warn("Could not retrieve PI.latest_charge:", e?.message || e);
+          }
+
           // Replay safety: if order exists for this external_id, don't recreate
           const existing = await getOrderByExternalId(external_id);
           if (existing?.pf_order_id) {
@@ -2391,7 +2468,9 @@ ${pfLines ? `\n${pfLines}` : ''}
                   external_id,
                   pf_order_id: existing.pf_order_id,
                   status: "confirmed",
-                  meta: { resumed: true }
+                  meta: { resumed: true },
+                  pi_id: piId,
+                  charge_id: chargeId
                 });
               } catch (e) {
                 console.error("Re-confirm existing PF order failed:", e?.message || e);
@@ -2419,7 +2498,9 @@ ${pfLines ? `\n${pfLines}` : ''}
                 external_id,
                 pf_order_id: pfOrderId,
                 status: "draft",
-                meta: { create_res: created }
+                meta: { create_res: created },
+                pi_id: piId,
+                charge_id: chargeId
               });
               globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
             } catch (e) {
@@ -2444,7 +2525,9 @@ ${pfLines ? `\n${pfLines}` : ''}
                   external_id,
                   pf_order_id: pfOrderId,
                   status: "confirmed",
-                  meta: { confirm: true }
+                  meta: { confirm: true },
+                  pi_id: piId,
+                  charge_id: chargeId
                 });
                 console.log(`Printful order ${pfOrderId} confirmed`);
               } catch (e) {
@@ -2472,6 +2555,76 @@ ${pfLines ? `\n${pfLines}` : ''}
     } catch (e) { console.error('Printful order attempt failed:', e?.message || e); globalThis.__LAST_PF_RESPONSE__ = { status:'EXCEPTION', text:String(e?.message||e) }; }
 
     console.log("✅ Inventory updated from payment");
+  }
+
+  // ---- Refund completed: cancel Printful order if possible ----
+  if (event.type === "charge.refunded") {
+    const firstTime = await markStripeEventProcessedOnce(event.id, event.type);
+    if (!firstTime) return res.status(200).send("[ok] duplicate refund event ignored");
+
+    const charge = event.data.object;
+    const chargeId = charge.id;
+    const piId = charge.payment_intent || null;
+
+    const rec = await findOrderByPIorCharge({ pi: piId, charge: chargeId });
+    if (!rec?.pf_order_id) return res.status(200).send("[ok] no linked order");
+
+    try {
+      const live = await printfulGetOrder(rec.pf_order_id);
+      const status = (live?.result?.status || "").toLowerCase();
+      if (!/fulfilled|shipped|canceled/.test(status)) {
+        await printfulCancelOrder(rec.pf_order_id);
+      }
+      await cancelOrderRecord({
+        external_id: rec.external_id,
+        pf_order_id: rec.pf_order_id,
+        refund_status: "charge.refunded"
+      });
+    } catch (e) {
+      console.error("Auto-cancel on refund failed:", e?.message || e);
+      await notifyOps("rich@richmediaempire.com",
+        `[CatfishEmpire] Auto-cancel failed for ${rec.external_id}`,
+        `<p>Stripe event: charge.refunded</p><p>pf_order_id: ${rec.pf_order_id}</p><pre>${(e?.message || e).toString()}</pre>`);
+    }
+    return res.status(200).send("[ok]");
+  }
+
+  // ---- Async payment failed ----
+  if (event.type === "checkout.session.async_payment_failed" || event.type === "payment_intent.payment_failed") {
+    const firstTime = await markStripeEventProcessedOnce(event.id, event.type);
+    if (!firstTime) return res.status(200).send("[ok] duplicate async fail ignored");
+
+    let piId = null, rec = null;
+    if (event.type === "payment_intent.payment_failed") {
+      const pi = event.data.object;
+      piId = pi.id;
+      rec = await findOrderByPIorCharge({ pi: piId });
+    } else {
+      const session = event.data.object;
+      piId = session.payment_intent || null;
+      rec = await findOrderByPIorCharge({ pi: piId });
+    }
+
+    if (!rec?.pf_order_id) return res.status(200).send("[ok] no linked order");
+
+    try {
+      const live = await printfulGetOrder(rec.pf_order_id);
+      const status = (live?.result?.status || "").toLowerCase();
+      if (!/fulfilled|shipped|canceled/.test(status)) {
+        await printfulCancelOrder(rec.pf_order_id);
+      }
+      await cancelOrderRecord({
+        external_id: rec.external_id,
+        pf_order_id: rec.pf_order_id,
+        refund_status: event.type
+      });
+    } catch (e) {
+      console.error("Auto-cancel on async failure failed:", e?.message || e);
+      await notifyOps("rich@richmediaempire.com",
+        `[CatfishEmpire] Auto-cancel failed for ${rec.external_id}`,
+        `<p>Stripe event: ${event.type}</p><p>pf_order_id: ${rec.pf_order_id}</p><pre>${(e?.message || e).toString()}</pre>`);
+    }
+    return res.status(200).send("[ok]");
   }
 
   res.json({ received: true });
