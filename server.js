@@ -152,20 +152,26 @@ const DON_MAX = parseInt(process.env.DONATION_MAX_CENTS || '1000000', 10);
 const TEST_MIN_CHARGE_CENTS = parseInt(process.env.TEST_MIN_CHARGE_CENTS || '50', 10);
 
 // === Promo codes from env: code1=(name)15 ... code10 ===
+function readPromoCodesFromEnv(env = process.env) {
+  const out = [];
+  for (let i = 1; i <= 5; i++) {
+    const key = `code${i}`;
+    const v = env[key] ?? env[key.toUpperCase()];
+    if (!v) continue;
+    const m = String(v).trim().match(/^\s*\(([^)]+)\)\s*(\d{1,3})\s*%?\s*$/);
+    if (!m) { console.warn(`Invalid promo ${key}:`, v); continue; }
+    const code = m[1].trim().toLowerCase().replace(/\s+/g,'');
+    const percent = Math.min(100, Math.max(0, parseInt(m[2],10) || 0));
+    out.push({ code, percent });
+  }
+  // dedupe last-wins
+  return [...new Map(out.map(p => [p.code, p])).values()];
+}
+
 function loadPromoMapFromEnv() {
   const map = {};
-  for (let i = 1; i <= 10; i++) {
-    const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
-    if (!raw) continue;
-    const m = String(raw).match(/^\s*\(([^)]+)\)\s*(\d{1,2}|100)\s*$/);
-    if (!m) {
-      console.warn(`Promo env code${i} is invalid. Expected (name)NN, got:`, raw);
-      continue;
-    }
-    const code = m[1].trim().toLowerCase().replace(/\s+/g,'');
-    const percent = parseInt(m[2], 10);
-    if (percent >= 0 && percent <= 100) map[code] = percent;
-  }
+  const list = readPromoCodesFromEnv();
+  for (const p of list) map[p.code] = p.percent;
   return map;
 }
 let PROMO_MAP = loadPromoMapFromEnv();
@@ -1658,21 +1664,6 @@ app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
     const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
     if (flat50 && input === flat50){
       return res.json({ ok:true, code: flat50, percent: 0, minCents: 50, mode: 'flat50' });
-    }
-    // narrowed parser per spec
-    function readPromoCodesFromEnv(env = process.env) {
-      const out = [];
-      for (let i = 1; i <= 5; i++) {
-        const key = `code${i}`;
-        const v = env[key] ?? env[key.toUpperCase()];
-        if (!v) continue;
-        const m = String(v).match(/\(([^)]+)\)\s*(\d{1,3})/);
-        if (!m) continue;
-        const code = m[1].trim().toLowerCase();
-        const percent = Math.min(100, Math.max(0, parseInt(m[2], 10) || 0));
-        out.push({ code, percent });
-      }
-      return [...new Map(out.map(p => [p.code, p])).values()];
     }
     const promos = readPromoCodesFromEnv();
     const found = promos.find(p => p.code === input.replace(/\s+/g,''));
