@@ -168,13 +168,8 @@ function readPromoCodesFromEnv(env = process.env) {
   return [...new Map(out.map(p => [p.code, p])).values()];
 }
 
-function loadPromoMapFromEnv() {
-  const map = {};
-  const list = readPromoCodesFromEnv();
-  for (const p of list) map[p.code] = p.percent;
-  return map;
-}
-let PROMO_MAP = loadPromoMapFromEnv();
+// Legacy PROMO_MAP - now unused, replaced by readPromoCodesFromEnv() calls
+let PROMO_MAP = {};
 function getActivePromo(req){ return req.session?.promo || null; }
 function setActivePromo(req, promo){ if (!req.session) req.session = {}; req.session.promo = promo; }
 function clearActivePromo(req){ if (req.session) req.session.promo = null; }
@@ -195,22 +190,7 @@ function priceAfterPromo(cents, promoPercent){
   return Math.max(0, Math.round((Number(cents) * kept) / 100));
 }
 
-// Case-insensitive parser returning array of { code, percent }
-function parseEnvPromos() {
-  const promos = [];
-  for (let i = 1; i <= 10; i++) {
-    const raw = process.env[`code${i}`] || process.env[`CODE${i}`];
-    if (!raw) continue;
-    const m = String(raw).trim().match(/^\s*\(([^)]+)\)\s*(\d{1,2})\s*$/);
-    if (!m) continue;
-    const code = m[1].trim().toLowerCase();
-    const percent = parseInt(m[2], 10);
-    if (Number.isFinite(percent) && percent > 0 && percent <= 99) {
-      promos.push({ code, percent });
-    }
-  }
-  return promos;
-}
+// Removed duplicate - using readPromoCodesFromEnv() above
 
 // ===== Stripe → Printful recipient mapper =====
 function parseJSONSafe(s){ try { return JSON.parse(s); } catch { return null; } }
@@ -1645,10 +1625,16 @@ app.get('/api/promo/active', cors(), (req, res) => {
 // Validate a code and set in session
 app.post('/api/promo/apply', corsAllow, express.json(), (req, res) => {
   const code = String(req.body?.code || '').trim().toLowerCase().replace(/\s+/g,'');
-  const pct = PROMO_MAP[code];
-  if (!pct) return res.status(404).json({ ok: false, message: 'Invalid code' });
-  setActivePromo(req, { code, percent: pct });
-  res.json({ ok: true, code, percent: pct });
+  const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
+  if (flat50 && code === flat50){
+    setActivePromo(req, { code, percent: 0, mode: 'flat50' });
+    return res.json({ ok: true, code, percent: 0, mode: 'flat50' });
+  }
+  const promos = readPromoCodesFromEnv();
+  const found = promos.find(p => p.code === code);
+  if (!found) return res.status(404).json({ ok: false, message: 'Invalid code' });
+  setActivePromo(req, { code: found.code, percent: found.percent });
+  res.json({ ok: true, code: found.code, percent: found.percent });
 });
 
 // Clear promo
