@@ -1644,19 +1644,34 @@ app.post('/api/promo/clear', corsAllow, (_req, res) => {
 });
 
 // Robust validator: parse env codes, case-insensitive, tolerant of spaces (code1..code5)
-app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
+app.post('/api/promo/validate', corsAllow, (req, res) => {
   try {
+    console.log('Validate request body:', req.body);
+    console.log('Validate request headers:', req.headers);
     const input = String(req.body?.code || '').trim().toLowerCase();
+    console.log('Parsed input code:', input);
+    
     const flat50 = String(process.env.FLAT50_CODE || '').trim().toLowerCase();
+    console.log('FLAT50_CODE env:', process.env.FLAT50_CODE, 'parsed:', flat50);
+    
     if (flat50 && input === flat50){
+      console.log('FLAT50 match found');
       return res.json({ ok:true, code: flat50, percent: 0, minCents: 50, mode: 'flat50' });
     }
+    
     const promos = readPromoCodesFromEnv();
+    console.log('Available promos:', promos);
     const found = promos.find(p => p.code === input.replace(/\s+/g,''));
-    if (!found) return res.status(404).json({ ok:false });
+    console.log('Found promo:', found);
+    
+    if (!found) {
+      console.log('No promo found for input:', input);
+      return res.status(404).json({ ok:false });
+    }
     return res.json({ ok:true, code: found.code, percent: found.percent, minCents: 50 });
   } catch (e) {
-    return res.status(500).json({ ok:false });
+    console.error('Validate error:', e);
+    return res.status(500).json({ ok:false, error: e.message });
   }
 });
 
