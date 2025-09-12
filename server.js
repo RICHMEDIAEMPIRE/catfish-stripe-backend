@@ -2596,7 +2596,7 @@ ${pfLines ? `\n${pfLines}` : ''}
             }
             globalThis.__LAST_PF_RESPONSE__ = { status:'REPLAY', text:'Existing order acknowledged', orderId: existing.pf_order_id };
           } else {
-            // Get real cart items from metadata (works even when Stripe charged $1)
+            // Get real cart items from metadata OR fall back to decoded session items
             let itemsFromMeta = [];
             try {
               if (session.metadata?.order_cart) {
@@ -2607,9 +2607,16 @@ ${pfLines ? `\n${pfLines}` : ''}
               console.warn("order_cart metadata parse failed:", e?.message || e);
             }
 
+            // Fallback: use decoded session items if no metadata
             if (!itemsFromMeta.length) {
-              console.error("No Printful items found in metadata; order will not be created.");
-              globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'No items in metadata' };
+              const decoded = items.map(x => ({ t: x.type || x.t, pid: Number(x.productId || x.pid || x.id || 0) || null, vid: Number(x.variantId || x.variant_id || x.vid || 0) || null, q: Number(x.qty || x.q || 1) || 1, c: x.color || x.c || '', s: x.size || x.s || '' }));
+              const pfItems = await buildPrintfulItems(decoded, token, storeId);
+              itemsFromMeta = pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity }));
+            }
+
+            if (!itemsFromMeta.length) {
+              console.error("No Printful items found in any source; order will not be created.");
+              globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'No items found' };
             } else {
               // Create DRAFT Printful order (back to original working method)
               let created, pfOrderId;
