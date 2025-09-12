@@ -2611,23 +2611,23 @@ ${pfLines ? `\n${pfLines}` : ''}
               console.error("No Printful items found in metadata; order will not be created.");
               globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'No items in metadata' };
             } else {
-              // Create CONFIRMED Printful order (no draft, immediate to production)
+              // Create DRAFT Printful order (back to original working method)
               let created, pfOrderId;
               try {
                 const orderPayload = {
                   external_id,
-                  confirm: true,
+                  confirm: false,
                   update_existing: false,
                   recipient,
                   items: itemsFromMeta.map(x => ({ sync_variant_id: Number(x.sync_variant_id), quantity: Number(x.quantity) }))
                 };
                 globalThis.__LAST_PF_PAYLOAD__ = { when: Date.now(), body: orderPayload };
-                created = await printfulCreateOrderConfirmed(orderPayload);
+                created = await printfulCreateOrderDraft(orderPayload);
                 pfOrderId = created?.result?.id || created?.result?.order?.id || created?.id;
                 await upsertOrderRecord({
                   external_id,
                   pf_order_id: pfOrderId,
-                  status: "confirmed",
+                  status: "draft",
                   meta: { create_res: created },
                   pi_id: piId,
                   charge_id: chargeId,
@@ -2636,10 +2636,10 @@ ${pfLines ? `\n${pfLines}` : ''}
                   currency: currency,
                   last_event_type: "checkout.session.completed"
                 });
-                console.log(`Printful order ${pfOrderId} created and confirmed immediately`);
+                console.log(`Printful order ${pfOrderId} created as draft (original working method)`);
                 globalThis.__LAST_PF_RESPONSE__ = { status: 200, text: JSON.stringify(created), orderId: pfOrderId };
               } catch (e) {
-                console.error("Printful create (confirm=true) failed:", e?.message || e);
+                console.error("Printful create draft failed:", e?.message || e);
                 await upsertOrderRecord({
                   external_id,
                   pf_order_id: null,
