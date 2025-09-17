@@ -223,52 +223,20 @@ function priceAfterPromo(cents, promoPercent){
 
 // ===== Idempotency & order-record helpers =====
 async function markStripeEventProcessedOnce(eventId, type) {
-  try {
-    const { error } = await supabase.from("stripe_events").insert({ id: eventId, type });
-    if (error) {
-      if (String(error.code) === "23505") return false; // unique violation
-      console.error("stripe_events insert error:", error);
-      // If table doesn't exist, continue processing (don't block on missing table)
-      if (error.message && error.message.includes('relation "stripe_events" does not exist')) {
-        console.warn("stripe_events table missing, skipping idempotency check");
-        return true; // allow processing to continue
-      }
-      return false; // safe default for other errors
-    }
-    return true;
-  } catch (e) {
-    console.error("markStripeEventProcessedOnce exception:", e);
-    return true; // allow processing to continue on exceptions
-  }
+  // Temporarily bypass idempotency check until Supabase tables are created
+  console.log(`Processing Stripe event ${eventId} (${type}) - idempotency temporarily disabled`);
+  return true;
 }
 
 async function getOrderByExternalId(externalId) {
-  const { data, error } = await supabase
-    .from("printful_orders")
-    .select("*")
-    .eq("external_id", externalId)
-    .maybeSingle();
-  if (error) { console.error("getOrderByExternalId error:", error); }
-  return data || null;
+  // Temporarily bypass order lookup until Supabase tables are created
+  console.log(`Would lookup order: ${externalId}`);
+  return null; // always treat as new order
 }
 
 async function upsertOrderRecord(record) {
-  const payload = {
-    external_id: record.external_id,
-    pf_order_id: record.pf_order_id ?? null,
-    status: record.status ?? null,
-    meta: record.meta ?? null,
-    pi_id: record.pi_id ?? null,
-    charge_id: record.charge_id ?? null,
-    amount_captured: record.amount_captured ?? null,
-    amount_refunded: record.amount_refunded ?? null,
-    currency: record.currency ?? null,
-    last_event_type: record.last_event_type ?? null,
-    cancel_reason: record.cancel_reason ?? null,
-    updated_at: new Date().toISOString()
-  };
-  const { error } = await supabase.from("printful_orders").upsert(payload, { onConflict: "external_id" });
-  if (error) console.error("upsertOrderRecord error:", error);
+  // Temporarily bypass order tracking until Supabase tables are created
+  console.log(`Would track order: ${record.external_id} -> ${record.pf_order_id} (${record.status})`);
 }
 
 async function findOrderByPIorCharge({ pi, charge }) {
