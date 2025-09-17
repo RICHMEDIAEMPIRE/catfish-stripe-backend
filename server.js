@@ -223,13 +223,23 @@ function priceAfterPromo(cents, promoPercent){
 
 // ===== Idempotency & order-record helpers =====
 async function markStripeEventProcessedOnce(eventId, type) {
-  const { error } = await supabase.from("stripe_events").insert({ id: eventId, type });
-  if (error) {
-    if (String(error.code) === "23505") return false; // unique violation
-    console.error("stripe_events insert error:", error);
-    return false; // safe default
+  try {
+    const { error } = await supabase.from("stripe_events").insert({ id: eventId, type });
+    if (error) {
+      if (String(error.code) === "23505") return false; // unique violation
+      console.error("stripe_events insert error:", error);
+      // If table doesn't exist, continue processing (don't block on missing table)
+      if (error.message && error.message.includes('relation "stripe_events" does not exist')) {
+        console.warn("stripe_events table missing, skipping idempotency check");
+        return true; // allow processing to continue
+      }
+      return false; // safe default for other errors
+    }
+    return true;
+  } catch (e) {
+    console.error("markStripeEventProcessedOnce exception:", e);
+    return true; // allow processing to continue on exceptions
   }
-  return true;
 }
 
 async function getOrderByExternalId(externalId) {
