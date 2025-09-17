@@ -1412,6 +1412,15 @@ async function getCatalogVariant(variantId) {
 }
 
 // GET /api/printful-product/:id → detail { id, name, description, images[], options:{colors[],sizes[]}, variants:[{id,color,size,priceCents,image}], variantMatrix{'color|size':variantId} }
+// Color normalizer for consistent key matching
+function colorKey(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/\//g, " ")       // split combos like "Black/Black"
+    .replace(/\s+/g, " ")      // collapse spaces
+    .trim();                   // keep readable, but stable
+}
+
 app.get('/api/printful-product/:id', cors(), async (req, res) => {
   try {
     const prodId = String(req.params.id).trim();
@@ -1713,6 +1722,52 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         galleryByColor[colorKey] = g;
       }
     } catch(_) {}
+
+    // 0) Build a display map for colors found in variants
+    const displayByKey = {};
+    for (const v of svs) {
+      const { color } = parseColorSize(v);
+      const display = (color || '').toString().trim();
+      const key = colorKey(display);
+      if (key) displayByKey[key] = display;
+    }
+
+    // 1) Normalize galleryByColor keys
+    const normalizedGallery = {};
+    for (const [c, bucket] of Object.entries(galleryByColor || {})) {
+      const k = colorKey(c);
+      if (!k) continue;
+      normalizedGallery[k] = bucket;
+    }
+    galleryByColor = normalizedGallery;
+
+    // 2) Normalize variantMatrix & priceByKey keys to "<colorKey>|<size>"
+    const normalizedVariantMatrix = {};
+    const normalizedPriceByKey = {};
+    for (const [k, val] of Object.entries(variantMatrix || {})) {
+      const [c, s] = k.split("|");
+      const nk = `${colorKey(c)}|${(s || "").trim()}`;
+      normalizedVariantMatrix[nk] = val;
+    }
+    for (const [k, val] of Object.entries(priceByKey || {})) {
+      const [c, s] = k.split("|");
+      const nk = `${colorKey(c)}|${(s || "").trim()}`;
+      normalizedPriceByKey[nk] = val;
+    }
+    variantMatrix = normalizedVariantMatrix;
+    priceByKey = normalizedPriceByKey;
+
+    // 3) Default color key normalized
+    defaultColor = colorKey(defaultColor) || Object.keys(galleryByColor)[0] || "";
+
+    // 4) availableAnglesByColor and colors array
+    const ANGLES = ["front","back","left","right"];
+    const availableAnglesByColor = {};
+    for (const [c, bucket] of Object.entries(galleryByColor)) {
+      availableAnglesByColor[c] = ANGLES.filter(a => !!bucket?.views?.[a]);
+    }
+    const colorsArray = Object.keys(displayByKey).map(k => ({ key: k, label: displayByKey[k] || k }));
+
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
 
     res.json({
@@ -1726,7 +1781,9 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       priceByKey,
       galleryByColor,
       defaultColor,
-      coverImage
+      coverImage,
+      colors: colorsArray,                    // NEW
+      availableAnglesByColor                  // NEW
     });
   } catch (e) {
     console.error('❌ /api/printful-product error:', e.message);
