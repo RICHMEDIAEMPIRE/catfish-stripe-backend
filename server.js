@@ -2528,7 +2528,7 @@ ${pfLines ? `\n${pfLines}` : ''}
           console.warn('SKIP Printful: recipient incomplete', recipient);
           globalThis.__LAST_PF_RESPONSE__ = { status:'SKIP', text:'Recipient incomplete', recipient };
         } else {
-          const external_id = stripeCheckoutId;
+          const external_id = mkPfExternalId(stripeCheckoutId);
           const autoConfirm = String(process.env.PRINTFUL_AUTO_CONFIRM || "").toLowerCase() === "true";
           
           // Capture PI and charge for refund mapping
