@@ -196,9 +196,18 @@ async function loadInventory() {
   const { data, error } = await supabase
     .from("inventory")
     .select("color, quantity");
-  if (error) throw error;
+  if (error) {
+    console.error('❌ Failed to load inventory:', error.message);
+    throw error;
+  }
+  if (!data) {
+    console.warn('⚠️ No inventory data returned from Supabase');
+    return {};
+  }
+  
   const inv = {};
   data.forEach((i) => (inv[i.color.trim()] = i.quantity));
+  console.log('📦 Loaded inventory:', inv);
   return inv;
 }
 
@@ -1838,7 +1847,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       colors: colorsArray,                    // NEW
       availableAnglesByColor                  // NEW
     });
-  } catch (e) {
+      } catch (e) {
     console.error('❌ /api/printful-product error:', e.message);
     res.status(500).json({ error: e.message });
   }
@@ -2723,6 +2732,8 @@ app.post("/webhook", async (req, res) => {
     let updated = [];
     const printfulLineItems = [];
     for (const item of items) {
+      console.log(`🔍 Processing item:`, { type: item.type, color: item.color, qty: item.qty, inventoryHasColor: inventory[item.color] !== undefined });
+      
       if (item.type === 'printful') {
         try {
           const safe = await coercePrintfulCartItem(item);
@@ -2735,11 +2746,19 @@ app.post("/webhook", async (req, res) => {
         // Sunglasses products - update inventory (handle both old and new formats)
         const color = item.color;
         const qty = item.qty || item.q || 1;
+        console.log(`🥽 Processing sunglasses: color=${color}, qty=${qty}, currentInventory=${inventory[color]}`);
+        
         if (color && inventory[color] !== undefined) {
+          const oldQty = inventory[color];
           inventory[color] -= qty;
+          console.log(`📦 Updating inventory: ${color} ${oldQty} → ${inventory[color]}`);
           await updateQuantity(color, inventory[color]);
           updated.push(`${qty} × ${color} Sunglasses - $14.99`);
+        } else {
+          console.log(`⚠️ Skipping sunglasses: color=${color} not in inventory or undefined`);
         }
+      } else {
+        console.log(`❓ Unknown item type: ${item.type}`);
       }
     }
 
