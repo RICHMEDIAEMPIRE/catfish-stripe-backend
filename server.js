@@ -2665,11 +2665,15 @@ app.post("/webhook", async (req, res) => {
         } catch (e) {
           console.error('Coerce printful item failed in webhook:', e.message);
         }
-      } else if (inventory[item.color] !== undefined) {
-        // Sunglasses products - update inventory
-        inventory[item.color] -= item.qty;
-        await updateQuantity(item.color, inventory[item.color]);
-        updated.push(`${item.qty} × ${item.color} Sunglasses - $14.99`);
+      } else if (item.type === 'sunglasses' || inventory[item.color] !== undefined) {
+        // Sunglasses products - update inventory (handle both old and new formats)
+        const color = item.color;
+        const qty = item.qty || item.q || 1;
+        if (color && inventory[color] !== undefined) {
+          inventory[color] -= qty;
+          await updateQuantity(color, inventory[color]);
+          updated.push(`${qty} × ${color} Sunglasses - $14.99`);
+        }
       }
     }
 
