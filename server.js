@@ -54,6 +54,82 @@ function detectAngle(file){
   return 'front';
 }
 
+// Generate missing mockups for a product using Printful Mockup Generator
+async function generateMissingMockups(productId, variantIds, existingFiles) {
+  try {
+    if (!process.env.PRINTFUL_API_KEY || !variantIds?.length) return {};
+    
+    // Use the first existing file as the design for all angles
+    const designFile = existingFiles.find(f => f.preview_url || f.thumbnail_url);
+    if (!designFile) return {};
+    
+    const imageUrl = designFile.preview_url || designFile.thumbnail_url;
+    
+    // Create mockup generation task for all angles
+    const taskPayload = {
+      variant_ids: variantIds.slice(0, 6), // Limit to avoid rate limits
+      format: 'jpg',
+      width: 800,
+      files: [{
+        placement: 'front',
+        image_url: imageUrl
+      }],
+      options: ['Front', 'Back', 'Left', 'Right'],
+      option_groups: ['Flat', 'Men\'s', 'Women\'s']
+    };
+    
+    const taskResp = await pfFetch(`/mockup-generator/create-task/${productId}`, {
+      method: 'POST',
+      body: JSON.stringify(taskPayload)
+    });
+    
+    const taskKey = taskResp?.result?.task_key;
+    if (!taskKey) return {};
+    
+    // Wait for generation (with timeout)
+    let attempts = 0;
+    const maxAttempts = 12; // 60 seconds max
+    
+    while (attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, 5000)); // Wait 5 seconds
+      
+      const resultResp = await pfFetch(`/mockup-generator/task?task_key=${taskKey}`, {
+        method: 'GET'
+      });
+      
+      if (resultResp?.result?.status === 'completed') {
+        const mockups = resultResp.result.mockups || [];
+        const angleMap = {};
+        
+        // Group mockups by angle
+        for (const mockup of mockups) {
+          const placement = String(mockup.placement || 'front').toLowerCase();
+          const angle = placement.includes('back') ? 'back' : 
+                       placement.includes('left') ? 'left' :
+                       placement.includes('right') ? 'right' : 'front';
+          
+          if (!angleMap[angle]) angleMap[angle] = [];
+          angleMap[angle].push(mockup.mockup_url);
+        }
+        
+        return angleMap;
+      }
+      
+      if (resultResp?.result?.status === 'failed') {
+        console.warn('Mockup generation failed:', resultResp.result.error);
+        break;
+      }
+      
+      attempts++;
+    }
+    
+    return {};
+  } catch (e) {
+    console.warn('Mockup generation error:', e.message);
+    return {};
+  }
+}
+
 function buildGalleryByColor({ variants, files, overrides, defaultColor }){
   const byColor = new Map();
   // seed from variants
@@ -1833,6 +1909,42 @@ app.get("/admin/promo/debug", corsAllow, (req, res) => {
 app.get("/admin/promo/onedollar", corsAllow, (req, res) => {
   const code = String(req.query.code || "").trim();
   res.json({ ok:true, query: code || null, isOneDollar: isOneDollarCode(code) });
+});
+
+// Generate missing mockups for a product (admin tool)
+app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    
+    const { productId, variantIds } = req.body || {};
+    if (!productId || !Array.isArray(variantIds)) {
+      return res.status(400).json({ error: 'productId and variantIds array required' });
+    }
+    
+    // Get existing files from the product
+    const productResp = await pfFetch(`/store/products/${productId}`, { method: 'GET' });
+    const svs = productResp?.result?.sync_variants || [];
+    const existingFiles = [];
+    
+    for (const sv of svs) {
+      for (const f of sv.files || []) {
+        if (f.preview_url || f.thumbnail_url) existingFiles.push(f);
+      }
+    }
+    
+    const generatedMockups = await generateMissingMockups(productId, variantIds, existingFiles);
+    
+    res.json({ 
+      ok: true, 
+      productId, 
+      variantIds, 
+      generatedMockups,
+      message: 'Mockup generation completed'
+    });
+  } catch (e) {
+    console.error('Admin mockup generation error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/promo/validate', corsAllow, express.json(), (req, res) => {
