@@ -1285,122 +1285,52 @@ const getPrintfulStoreId = async () => {
 
 
 
-// GET /api/printful-products → list cards { id, name, thumb, priceMinCents, currency:'USD', hasVariants:true }
+// GET /api/printful-products → fast cached list for homepage
 app.get("/api/printful-products", cors(), async (req, res) => {
   try {
-    const bypass = ("nocache" in req.query);
-    const TTL = 15 * 60 * 1000;
-    if (!global.pfCache) global.pfCache = { productsList: { data: null, ts: 0 }, productDetailById: {}, variantById: {} };
-    const now = Date.now();
+    const key = "pf:list:v2";
+    const cached = getCache(key);
+    if (cached) {
+      res.set("Cache-Control", "public, max-age=300"); // 5 min client cache
+      return res.json(cached);
+    }
+
     const token = process.env.PRINTFUL_API_KEY;
     if (!token) return res.status(500).json({ error: 'Printful token missing' });
 
-    // Return cached data if available
-    if (!bypass && global.pfCache.productsList.data && now - global.pfCache.productsList.ts < TTL) {
-      return res.json(global.pfCache.productsList.data);
-    }
-
-    // Fetch products list using withStoreId helper
+    // Fast list fetch - no per-product detail calls
     const baseListUrl = withStoreId('https://api.printful.com/store/products');
     const listResp = await fetch(baseListUrl, { headers: pfHeaders() });
-    
-    if (!listResp.ok) {
-      console.error('❌ Unable to list products from Printful. Returning empty list.');
-      const payload = { products: [], count: 0, timestamp: now };
-      global.pfCache.productsList = { data: payload, ts: now };
-      return res.json(payload);
-    }
-
-    const listJson = await listResp.json();
+    const listJson = await listResp.json().catch(() => ({}));
     const products = Array.isArray(listJson.result) ? listJson.result : [];
+    
+    // Simple card list - just basic info for fast homepage load
+    const cards = products.map(p => ({
+      id: p.id,
+      name: p.name || 'Product',
+      thumb: p.thumbnail_url || '',
+      image: p.thumbnail_url || '',
+      priceMinCents: null, // Will be loaded on-demand
+      currency: 'USD',
+      hasVariants: true
+    }));
 
-    const cards = [];
-    for (const p of products) {
-      try {
-        const d = await getPrintfulProductDetailCached(p.id, token);
-        const variants = d?.result?.sync_variants || [];
-        let minCents = null;
-        
-        // Find minimum price from all variants
-        for (const v of variants) {
-          const cents = Math.round(parseFloat(v.retail_price || v.price || '0') * 100);
-          if (isFinite(cents) && cents > 0) {
-            minCents = minCents == null ? cents : Math.min(minCents, cents);
-          }
-        }
-        
-        // choose a default color cover if possible
-        const sv0 = variants?.[0];
-        const sp0 = d?.result?.sync_product || {};
-        let thumb = p.thumbnail_url || sp0.thumbnail_url || '';
-        let defaultColor = null;
-        if (sv0) {
-          const name = String(sv0?.name || '');
-          const colorGuess = name.split(/[\/-]/)[0].trim();
-          defaultColor = colorGuess || null;
-          const files = sv0?.files || [];
-          const front = files.find(f => (f.preview_url||'').toLowerCase().includes('front'));
-          if (front?.preview_url) thumb = front.preview_url;
-        }
-        // If product detail already computed coverByColor, prefer that
-        try {
-          const detail = await getPrintfulProductDetailCached(p.id, token);
-          const resultDetail = detail?.result || {};
-          const svsDetail = Array.isArray(resultDetail.sync_variants) ? resultDetail.sync_variants : [];
-          const galleryGuess = svsDetail?.[0]?.files || [];
-          const front2 = galleryGuess.find(f => (f.preview_url||'').toLowerCase().includes('front'));
-          if (front2?.preview_url) thumb = front2.preview_url;
-          } catch {}
-        cards.push({ 
-          id: p.id, 
-          name: (d?.result?.sync_product?.name) || p.name || 'Product', 
-          thumb, 
-          priceMinCents: minCents, 
-          currency: 'USD', 
-          hasVariants: true,
-          defaultColor,
-          // compat
-          image: thumb,
-          price: (minCents != null) ? (minCents / 100) : null
-        });
-        
-        // Rate limiting
-        await new Promise(r => setTimeout(r, 35));
-      } catch (e) {
-        console.warn('Card build failed for', p.id, e.message);
-        cards.push({ 
-          id: p.id, 
-          name: p.name || 'Product', 
-          thumb: p.thumbnail_url || '', 
-          priceMinCents: null, 
-          currency: null, 
-          hasVariants: true,
-          // compat fields for older frontends
-          image: p.thumbnail_url || '',
-          price: null
-        });
-      }
-    }
-
-    // Apply custom sort order if defined in Supabase
+    // Apply Supabase sort if available
     try {
       const ids = cards.map(c => String(c.id));
       const { data: sorts } = await supabase
         .from('product_sort')
-        .select('product_id, sort_index')
-        .in('product_id', ids);
+        .select('product_id, sort_index');
       if (Array.isArray(sorts) && sorts.length) {
-        const idx = new Map();
-        sorts.forEach(r => idx.set(String(r.product_id), Number(r.sort_index) || 0));
-        cards.sort((a,b) => (idx.get(String(a.id)) ?? 1e9) - (idx.get(String(b.id)) ?? 1e9));
+        const sortMap = new Map(sorts.map(r => [String(r.product_id), Number(r.sort_index) || 0]));
+        cards.sort((a,b) => (sortMap.get(String(a.id)) ?? 1e9) - (sortMap.get(String(b.id)) ?? 1e9));
       }
-    } catch (e) {
-      // ignore sorting errors
-    }
+    } catch {}
 
-    const payload = { products: cards, count: cards.length, timestamp: now };
-    if (!bypass) global.pfCache.productsList = { data: payload, ts: now };
-    res.json(payload);
+    const payload = { products: cards, count: cards.length };
+    setCache(key, payload, 5 * 60 * 1000); // 5 min server cache
+    res.set("Cache-Control", "public, max-age=300");
+    return res.json(payload);
   } catch (error) {
     console.error('❌ /api/printful-products error:', error.message);
     res.status(500).json({ error: error.message });
@@ -1743,18 +1673,44 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     defaultColor = colorScores[0] ? colorScores[0].c : (colors[0] || null);
     const coverImage = coverByColor[String(defaultColor||'').toLowerCase()] || images[0] || null;
 
-    // Ensure every color exposes all angle keys, borrowing from defaultColor when missing
+    // Ensure every color has all angles - generate missing ones if needed
     try {
-      const orderedAngleKeys = ['front','left-front','right-front','left','right','back'];
-      const defKey = String(defaultColor||'').toLowerCase();
-      const defViews = (defKey && galleryByColor[defKey]?.views) ? galleryByColor[defKey].views : {};
-      for (const [cKey, g] of Object.entries(galleryByColor)) {
-        const v = g.views || {};
-        // Borrow only the canonical angles front/back/left/right
-        const borrowKeys = ['front','back','left','right'];
-        for (const k of borrowKeys) { if (!v[k] && defViews && defViews[k]) { v[k]=defViews[k]; if (!g.images.includes(defViews[k])) g.images.push(defViews[k]); } }
-        g.views = v;
-        galleryByColor[cKey] = g;
+      const allColors = Object.keys(galleryByColor);
+      for (const colorKey of allColors) {
+        const g = galleryByColor[colorKey];
+        const views = g.views || {};
+        const missingAngles = [];
+        
+        for (const angle of ['front','back','left','right']) {
+          if (!views[angle]) missingAngles.push(angle);
+        }
+        
+        // If we have some angles but missing others, try to generate them
+        if (missingAngles.length > 0 && missingAngles.length < 4) {
+          // Auto-generate missing angles in background (don't block response)
+          setImmediate(async () => {
+            try {
+              const variantIds = variants.filter(v => (v.color||'').toLowerCase() === colorKey).map(v => v.id);
+              if (variantIds.length) {
+                await generateMissingMockups(prodId, variantIds, []);
+              }
+            } catch (e) {
+              console.warn('Background mockup generation failed:', e.message);
+            }
+          });
+        }
+        
+        // For now, fill missing angles from defaultColor as fallback
+        const defKey = String(defaultColor||'').toLowerCase();
+        const defViews = (defKey && galleryByColor[defKey]?.views) ? galleryByColor[defKey].views : {};
+        for (const k of ['front','back','left','right']) { 
+          if (!views[k] && defViews && defViews[k]) { 
+            views[k] = defViews[k]; 
+            if (!g.images.includes(defViews[k])) g.images.push(defViews[k]); 
+          } 
+        }
+        g.views = views;
+        galleryByColor[colorKey] = g;
       }
     } catch(_) {}
     console.log(`🧩 /api/printful-product/${prodId}: variants=${count}`);
