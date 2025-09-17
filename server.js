@@ -1732,6 +1732,59 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       if (key) displayByKey[key] = display;
     }
 
+    // HARDCODED: Custom mockups for Distressed Flag Tee (392073769)
+    if (String(prodId) === '392073769') {
+      const baseUrl = 'https://catfishempire.netlify.app/mockups/distressed-flag-tee';
+      const customMockups = {
+        'black': {
+          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-front-68cb1a6c2d7df.jpg`,
+          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-back-68cb1a6c2c67b.jpg`,
+          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-left-68cb1a6c2fd83.jpg`,
+          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-right-68cb1a6c3084b.jpg`
+        },
+        'white': {
+          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-front-68cb1a6c2df88.jpg`,
+          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-back-68cb1a6c2cedb.jpg`,
+          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-left-68cb1a6c3031c.jpg`,
+          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-right-68cb1a6c30dc1.jpg`
+        },
+        'navy': {
+          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-front-68cb1a6c2dcb0.jpg`,
+          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-back-68cb1a6c2cae3.jpg`,
+          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-left-68cb1a6c30061.jpg`,
+          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-right-68cb1a6c30b25.jpg`
+        },
+        'red': {
+          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-front-68cb1a6c2ddc4.jpg`,
+          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-back-68cb1a6c2cbf8.jpg`,
+          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-left-68cb1a6c30167.jpg`,
+          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-right-68cb1a6c30c2a.jpg`
+        },
+        'military green': {
+          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-front-68cb1a6c2dbd3.jpg`,
+          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-back-68cb1a6c2ca59.jpg`,
+          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-left-68cb1a6c2ffda.jpg`,
+          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-right-68cb1a6c30a9d.jpg`
+        }
+      };
+
+      // Merge custom mockups directly into galleryByColor
+      for (const [colorName, angles] of Object.entries(customMockups)) {
+        const normalizedColor = colorKey(colorName);
+        if (!galleryByColor[normalizedColor]) {
+          galleryByColor[normalizedColor] = { views: {}, images: [] };
+        }
+        
+        // Add all angles
+        for (const [angle, url] of Object.entries(angles)) {
+          galleryByColor[normalizedColor].views[angle] = url;
+          if (!galleryByColor[normalizedColor].images.includes(url)) {
+            galleryByColor[normalizedColor].images.push(url);
+          }
+        }
+      }
+    }
+
     // 1) Normalize galleryByColor keys
     const normalizedGallery = {};
     for (const [c, bucket] of Object.entries(galleryByColor || {})) {
