@@ -2609,10 +2609,16 @@ ${pfLines ? `\n${pfLines}` : ''}
 
             // Fallback: use decoded session items if no metadata
             if (!itemsFromMeta.length) {
+              console.log('No order_cart metadata, falling back to decoded session items...');
               const decoded = items.map(x => ({ t: x.type || x.t, pid: Number(x.productId || x.pid || x.id || 0) || null, vid: Number(x.variantId || x.variant_id || x.vid || 0) || null, q: Number(x.qty || x.q || 1) || 1, c: x.color || x.c || '', s: x.size || x.s || '' }));
+              console.log('Decoded items:', decoded);
               const pfItems = await buildPrintfulItems(decoded, token, storeId);
+              console.log('Built PF items:', pfItems);
               itemsFromMeta = pfItems.map(x => ({ sync_variant_id: x.sync_variant_id, quantity: x.quantity }));
             }
+
+            console.log('Final items for Printful:', itemsFromMeta);
+            console.log('Recipient:', recipient);
 
             if (!itemsFromMeta.length) {
               console.error("No Printful items found in any source; order will not be created.");
