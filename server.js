@@ -1744,13 +1744,14 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         }
         
         // TEMPORARY: Create basic angle fallbacks from front image for better UX
-        const frontImage = views.front;
-        if (frontImage && (!views.back || !views.left || !views.right)) {
-          // Use the front image as fallback for missing angles
+        const frontImage = views.front || (g.images && g.images[0]);
+        if (frontImage) {
+          // Ensure all angles are available, using front image as fallback
+          if (!views.front) views.front = frontImage;
           if (!views.back) views.back = frontImage;
           if (!views.left) views.left = frontImage;  
           if (!views.right) views.right = frontImage;
-          console.log(`📸 Added angle fallbacks for color ${colorKey} using front image`);
+          console.log(`📸 Added angle fallbacks for color ${colorKey} using image: ${frontImage.substring(0, 50)}...`);
         }
         
         // Also fill missing angles from defaultColor as additional fallback
