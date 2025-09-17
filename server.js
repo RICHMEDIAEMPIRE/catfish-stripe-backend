@@ -891,10 +891,11 @@ function getPrintfulAuthHeader() {
   return `Bearer ${token}`;
 }
 
-// Deterministic short external_id for Printful (<=64 chars)
+// Deterministic short external_id for Printful (<=32 chars)
 function mkPfExternalId(stripeSessionId) {
-  return 'cs_' + crypto.createHash('sha1').update(String(stripeSessionId||''))
-    .digest('hex').slice(0,24);
+  const hash = crypto.createHash('sha1').update(String(stripeSessionId||''))
+    .digest('hex').slice(0,16);
+  return `ce_${hash}`;
 }
 
 // Fetch details for a specific Printful store variant (name, price, image, color, size)
