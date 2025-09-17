@@ -243,7 +243,13 @@ async function updateQuantity(color, qty) {
   if (error) throw error;
 }
 
-loadInventory().then((inv) => (inventory = inv));
+loadInventory().then((inv) => {
+  inventory = inv;
+  console.log('🚀 Server startup - inventory loaded:', inv);
+}).catch(err => {
+  console.error('❌ Failed to load inventory on startup:', err.message);
+  inventory = {};
+});
 
 // ===== EMAIL SETUP =====
 const transporter = nodemailer.createTransport({
