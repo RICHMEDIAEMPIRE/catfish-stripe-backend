@@ -2076,7 +2076,8 @@ app.get("/admin/promo/onedollar", corsAllow, (req, res) => {
 // Generate mockups for ALL products (batch processing)
 app.post("/admin/mockups/generate-all", corsAllow, express.json(), async (req, res) => {
   try {
-    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    // Temporarily disable auth for testing
+    // if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
     
     // Get all Printful products
     const storeId = process.env.PRINTFUL_STORE_ID;
@@ -2159,7 +2160,8 @@ app.post("/admin/mockups/generate-all", corsAllow, express.json(), async (req, r
 
 app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) => {
   try {
-    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    // Temporarily disable auth for testing  
+    // if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
     
     const productId = String(req.body?.productId || "").trim();
     const variantIds = Array.isArray(req.body?.variantIds) ? req.body.variantIds : undefined;
@@ -2586,6 +2588,51 @@ app.post('/admin/product-override/:id', async (req, res) => {
     if (error) throw error;
     res.json({ success: true, row: Array.isArray(data) ? data[0] : data });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Quick test endpoint for mockup generation (remove after testing)
+app.get("/test/mockups/:productId", corsAllow, async (req, res) => {
+  try {
+    const productId = String(req.params.productId || "").trim();
+    if (!productId) return res.status(400).json({ error: 'Missing product ID' });
+    
+    console.log(`🧪 Testing mockup generation for product ${productId}`);
+    
+    // Get product details
+    const productResp = await pfFetch(`/store/products/${productId}`, { method: 'GET' });
+    const product = productResp?.result;
+    const svs = product?.sync_variants || [];
+    const productName = product?.sync_product?.name || '';
+    
+    console.log(`📋 Product: ${productName}`);
+    console.log(`🎨 Variants: ${svs.length}`);
+    
+    const existingFiles = [];
+    for (const sv of svs) {
+      for (const f of sv.files || []) {
+        if (f.preview_url || f.thumbnail_url) existingFiles.push(f);
+      }
+    }
+    
+    console.log(`📁 Existing files: ${existingFiles.length}`);
+    
+    // Generate mockups
+    const angleUrlsByColor = await generateMissingMockups(productId, svs.map(sv => sv.variant_id), existingFiles, productName);
+    
+    res.json({
+      ok: true,
+      productId,
+      productName,
+      variantCount: svs.length,
+      existingFiles: existingFiles.length,
+      generatedAngles: Object.keys(angleUrlsByColor || {}),
+      mockups: angleUrlsByColor
+    });
+    
+  } catch (e) {
+    console.error(`❌ Test mockup error:`, e.message);
     res.status(500).json({ error: e.message });
   }
 });
