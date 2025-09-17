@@ -2918,15 +2918,25 @@ app.post("/webhook", async (req, res) => {
         }
       } else if (item.type === 'sunglasses' || inventory[item.color] !== undefined) {
         // Sunglasses products - update inventory (handle both old and new formats)
-        const color = item.color;
+        const color = typeof item.color === 'string' ? item.color.trim() : item.color;
         const qty = item.qty || item.q || 1;
-        console.log(`🥽 Processing sunglasses: color=${color}, qty=${qty}, currentInventory=${inventory[color]}`);
+        const colorKey = typeof color === 'string' ? color.toLowerCase() : color;
+        // Case-insensitive match for inventory colors
+        let invKey = null;
+        if (colorKey && inventory[colorKey] !== undefined) {
+          invKey = colorKey;
+        } else if (colorKey) {
+          const found = Object.keys(inventory).find(k => String(k).toLowerCase() === colorKey);
+          if (found) invKey = found;
+        }
+        console.log(`🥽 Processing sunglasses: color=${color} (invKey=${invKey}), qty=${qty}, currentInventory=${invKey!=null?inventory[invKey]:undefined}`);
         
-        if (color && inventory[color] !== undefined) {
-          const oldQty = inventory[color];
-          inventory[color] -= qty;
-          console.log(`📦 Updating inventory: ${color} ${oldQty} → ${inventory[color]}`);
-          await updateQuantity(color, inventory[color]);
+        if (invKey != null) {
+          const oldQty = inventory[invKey];
+          const nextQty = Math.max(0, Number(oldQty) - Number(qty));
+          inventory[invKey] = nextQty;
+          console.log(`📦 Updating inventory: ${invKey} ${oldQty} → ${nextQty}`);
+          await updateQuantity(invKey, nextQty);
           updated.push(`${qty} × ${color} Sunglasses - $14.99`);
         } else {
           console.log(`⚠️ Skipping sunglasses: color=${color} not in inventory or undefined`);
