@@ -1463,7 +1463,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const globalImagesSet = new Set();
     const mockupsByColor = {};
     const coverByColor = {};
-    const galleryByColor = {}; // colorLower -> { views: {front,back,left,right}, images: [] }
+    let galleryByColor = {}; // colorLower -> { views: {front,back,left,right}, images: [] }
     const viewOrder = ['front','back','left-front','right-front','left','right','other'];
     if (Array.isArray(sp.files)) {
       sp.files.forEach(f => { const u=normUrl(f?.preview_url); if (u && !isDesign(u) && !isGloballyHidden(u)) globalImagesSet.add(u); });
@@ -1526,8 +1526,8 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     const variants = [];
     const colors = [];
     const sizes = [];
-    const variantMatrix = {};
-    const priceByKey = {};
+    let variantMatrix = {};
+    let priceByKey = {};
     let count = 0;
     
     for (const v of svs) {
@@ -1664,7 +1664,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         }
         // price_override_cents could be applied to display in UI if needed
       }
-      } catch (e) {
+  } catch (e) {
       // Likely table missing; ignore silently
       console.warn('product_overrides not applied:', e.message);
     }
