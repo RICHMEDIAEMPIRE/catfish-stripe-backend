@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mockup Generator - Catfish Empire Admin</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            max-width: 800px; 
+            margin: 2rem auto; 
+            padding: 1rem; 
+            background: #f5f5f5;
+        }
+        .card { 
+            background: white; 
+            border-radius: 8px; 
+            padding: 1.5rem; 
+            margin-bottom: 1rem; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn { 
+            background: #007bff; 
+            color: white; 
+            border: none; 
+            padding: 0.75rem 1.5rem; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            font-size: 1rem;
+            margin-right: 0.5rem;
+        }
+        .btn:hover { background: #0056b3; }
+        .btn:disabled { background: #6c757d; cursor: not-allowed; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .status { 
+            padding: 0.5rem; 
+            border-radius: 4px; 
+            margin: 1rem 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+        }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        .progress { 
+            width: 100%; 
+            height: 20px; 
+            background: #e9ecef; 
+            border-radius: 4px; 
+            overflow: hidden;
+            margin: 1rem 0;
+        }
+        .progress-bar { 
+            height: 100%; 
+            background: #007bff; 
+            transition: width 0.3s ease;
+        }
+        h1 { color: #333; }
+        h2 { color: #666; margin-top: 2rem; }
+        .warning { 
+            background: #fff3cd; 
+            color: #856404; 
+            border: 1px solid #ffeaa7; 
+            padding: 1rem; 
+            border-radius: 4px; 
+            margin: 1rem 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎨 Mockup Generator</h1>
+    <p>Generate consistent mockups for all Catfish Empire products with proper character selection.</p>
+    
+    <div class="card">
+        <h2>Character Rules</h2>
+        <ul>
+            <li><strong>T-Shirts & Hoodies:</strong> Male character (default)</li>
+            <li><strong>"Lake Hair Don't Care":</strong> Female character with brown hair</li>
+            <li><strong>All Products:</strong> Front, Back, Left, Right angles</li>
+        </ul>
+    </div>
+
+    <div class="warning">
+        <strong>⚠️ Warning:</strong> This process will generate mockups for ALL products and may take 10-30 minutes. 
+        It will also consume Printful API quota. Use sparingly.
+    </div>
+
+    <div class="card">
+        <h2>Batch Generation</h2>
+        <button id="generateAll" class="btn" onclick="generateAllMockups()">
+            🎨 Generate All Product Mockups
+        </button>
+        <button id="stop" class="btn btn-danger" onclick="stopGeneration()" disabled>
+            ⏹️ Stop Generation
+        </button>
+        
+        <div id="progress" class="progress" style="display: none;">
+            <div id="progressBar" class="progress-bar" style="width: 0%"></div>
+        </div>
+        
+        <div id="status"></div>
+    </div>
+
+    <div class="card">
+        <h2>Single Product</h2>
+        <input type="text" id="productId" placeholder="Product ID (e.g. 392073769)" style="padding: 0.5rem; margin-right: 0.5rem; border: 1px solid #ccc; border-radius: 4px;">
+        <button class="btn" onclick="generateSingleProduct()">Generate Single Product</button>
+    </div>
+
+    <script>
+        let isGenerating = false;
+
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.className = `status ${type}`;
+            status.textContent = message;
+        }
+
+        function updateProgress(current, total) {
+            const progress = document.getElementById('progress');
+            const progressBar = document.getElementById('progressBar');
+            
+            if (current === 0 && total === 0) {
+                progress.style.display = 'none';
+                return;
+            }
+            
+            progress.style.display = 'block';
+            const percent = Math.round((current / total) * 100);
+            progressBar.style.width = `${percent}%`;
+        }
+
+        async function generateAllMockups() {
+            if (isGenerating) return;
+            
+            if (!confirm('This will generate mockups for ALL products. This may take 10-30 minutes and consume API quota. Continue?')) {
+                return;
+            }
+            
+            isGenerating = true;
+            document.getElementById('generateAll').disabled = true;
+            document.getElementById('stop').disabled = false;
+            
+            showStatus('🚀 Starting batch mockup generation...', 'info');
+            updateProgress(0, 1);
+            
+            try {
+                const response = await fetch('/admin/mockups/generate-all', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include'
+                });
+                
+                const result = await response.json();
+                
+                if (result.ok) {
+                    showStatus(`✅ Success! Generated mockups for ${result.processed}/${result.total} products.\n\nResults:\n${result.results.map(r => `• ${r.name}: ${r.error ? 'ERROR - ' + r.error : 'Success'}`).join('\n')}`, 'success');
+                    updateProgress(result.processed, result.total);
+                } else {
+                    showStatus(`❌ Error: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`❌ Network Error: ${error.message}`, 'error');
+            } finally {
+                isGenerating = false;
+                document.getElementById('generateAll').disabled = false;
+                document.getElementById('stop').disabled = true;
+                updateProgress(0, 0);
+            }
+        }
+
+        async function generateSingleProduct() {
+            const productId = document.getElementById('productId').value.trim();
+            if (!productId) {
+                alert('Please enter a product ID');
+                return;
+            }
+            
+            showStatus(`🎨 Generating mockups for product ${productId}...`, 'info');
+            
+            try {
+                const response = await fetch('/admin/mockups/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ productId })
+                });
+                
+                const result = await response.json();
+                
+                if (result.ok) {
+                    showStatus(`✅ Success! Generated mockups for product ${productId}.\n\nCustom mockups: ${JSON.stringify(result.custom_mockups, null, 2)}`, 'success');
+                } else {
+                    showStatus(`❌ Error: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`❌ Network Error: ${error.message}`, 'error');
+            }
+        }
+
+        function stopGeneration() {
+            // Note: This doesn't actually stop the server-side process
+            // It just resets the UI state
+            isGenerating = false;
+            document.getElementById('generateAll').disabled = false;
+            document.getElementById('stop').disabled = true;
+            updateProgress(0, 0);
+            showStatus('⏹️ Generation stopped (server process may continue)', 'info');
+        }
+
+        // Check authentication status on load
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch('/admin/status', { credentials: 'include' });
+                if (!response.ok) {
+                    showStatus('❌ Not authenticated. Please log in first.', 'error');
+                    document.getElementById('generateAll').disabled = true;
+                }
+            } catch (error) {
+                showStatus('❌ Cannot connect to server', 'error');
+                document.getElementById('generateAll').disabled = true;
+            }
+        });
+    </script>
+</body>
+</html>

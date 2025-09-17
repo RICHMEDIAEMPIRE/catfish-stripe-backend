@@ -55,7 +55,7 @@ function detectAngle(file){
 }
 
 // Generate missing mockups for a product using Printful Mockup Generator
-async function generateMissingMockups(productId, variantIds, existingFiles) {
+async function generateMissingMockups(productId, variantIds, existingFiles, productName = '') {
   try {
     if (!process.env.PRINTFUL_API_KEY || !variantIds?.length) return {};
     
@@ -64,6 +64,18 @@ async function generateMissingMockups(productId, variantIds, existingFiles) {
     if (!designFile) return {};
     
     const imageUrl = designFile.preview_url || designFile.thumbnail_url;
+    
+    // Determine character type based on product name
+    const nameLower = String(productName || '').toLowerCase();
+    let optionGroups = ['Flat', 'Men\'s']; // Default to male character
+    
+    if (nameLower.includes('lake hair don\'t care') || nameLower.includes('lake hair dont care')) {
+      // Female character for Lake Hair Don't Care
+      optionGroups = ['Flat', 'Women\'s'];
+      console.log(`🎭 Using female character for: ${productName}`);
+    } else {
+      console.log(`🎭 Using male character for: ${productName}`);
+    }
     
     // Create mockup generation task for all angles
     const taskPayload = {
@@ -75,7 +87,7 @@ async function generateMissingMockups(productId, variantIds, existingFiles) {
         image_url: imageUrl
       }],
       options: ['Front', 'Back', 'Left', 'Right'],
-      option_groups: ['Flat', 'Men\'s', 'Women\'s']
+      option_groups: optionGroups
     };
     
     const taskResp = await pfFetch(`/mockup-generator/create-task/${productId}`, {
@@ -1710,7 +1722,8 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             try {
               const variantIds = variants.filter(v => (v.color||'').toLowerCase() === colorKey).map(v => v.id);
               if (variantIds.length) {
-                await generateMissingMockups(prodId, variantIds, []);
+                const productName = product?.sync_product?.name || product?.name || '';
+                await generateMissingMockups(prodId, variantIds, [], productName);
               }
             } catch (e) {
               console.warn('Background mockup generation failed:', e.message);
@@ -2060,6 +2073,90 @@ app.get("/admin/promo/onedollar", corsAllow, (req, res) => {
 });
 
 // Generate missing mockups for a product (admin tool) - now persists to Supabase Storage
+// Generate mockups for ALL products (batch processing)
+app.post("/admin/mockups/generate-all", corsAllow, express.json(), async (req, res) => {
+  try {
+    if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    
+    // Get all Printful products
+    const storeId = process.env.PRINTFUL_STORE_ID;
+    const headers = { Authorization: `Bearer ${process.env.PRINTFUL_API_KEY}` };
+    const base = "https://api.printful.com";
+    const r = await fetch(`${base}/store/products?store_id=${storeId}&limit=100`, { headers });
+    const json = await r.json();
+    const products = json?.result || [];
+    
+    const results = [];
+    let processed = 0;
+    
+    for (const product of products) {
+      try {
+        const productId = String(product.id);
+        console.log(`🎨 Generating mockups for product ${productId}: ${product.name}`);
+        
+        // Get product details
+        const productResp = await pfFetch(`/store/products/${productId}`, { method: 'GET' });
+        const svs = productResp?.result?.sync_variants || [];
+        const existingFiles = [];
+        
+        for (const sv of svs) {
+          for (const f of sv.files || []) {
+            if (f.preview_url || f.thumbnail_url) existingFiles.push(f);
+          }
+        }
+        
+        // Generate mockups
+        const angleUrlsByColor = await generateMissingMockups(productId, svs.map(sv => sv.variant_id), existingFiles, product.name);
+        
+        // Upload and persist
+        const persisted = {};
+        for (const [color, angles] of Object.entries(angleUrlsByColor || {})) {
+          const out = {};
+          for (const angle of ["front","back","left","right"]) {
+            const src = angles[angle];
+            if (!src || !Array.isArray(src) || !src.length) continue;
+            try {
+              const publicUrl = await uploadMockupAndGetPublicUrl({ productId, color, angle, sourceUrl: src[0] });
+              out[angle] = publicUrl;
+            } catch (e) {
+              console.warn(`Failed to upload ${color}/${angle}:`, e.message);
+            }
+          }
+          if (Object.keys(out).length) persisted[color] = out;
+        }
+        
+        if (Object.keys(persisted).length > 0) {
+          const merged = await mergeCustomMockupsInDB(productId, persisted);
+          results.push({ productId, name: product.name, custom_mockups: merged });
+        }
+        
+        processed++;
+        
+        // Add delay to avoid rate limiting
+        if (processed < products.length) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+        
+      } catch (e) {
+        console.error(`Failed to generate mockups for product ${product.id}:`, e.message);
+        results.push({ productId: String(product.id), name: product.name, error: e.message });
+      }
+    }
+    
+    res.json({ 
+      ok: true, 
+      processed,
+      total: products.length,
+      results,
+      message: `Processed ${processed}/${products.length} products`
+    });
+    
+  } catch (e) {
+    console.error('Batch mockup generation error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) => {
   try {
     if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
@@ -2079,8 +2176,9 @@ app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) 
       }
     }
     
-    // 2) Generate temporary mockups via Printful API
-    const angleUrlsByColor = await generateMissingMockups(productId, variantIds || svs.map(sv => sv.variant_id), existingFiles);
+    // 2) Generate temporary mockups via Printful API  
+    const productName = productResp?.result?.sync_product?.name || '';
+    const angleUrlsByColor = await generateMissingMockups(productId, variantIds || svs.map(sv => sv.variant_id), existingFiles, productName);
 
     // 3) Upload each angle to Supabase Storage → get permanent public URLs
     const persisted = {};
