@@ -90,13 +90,22 @@ async function generateMissingMockups(productId, variantIds, existingFiles, prod
       option_groups: optionGroups
     };
     
+    console.log(`🎨 Mockup task payload:`, JSON.stringify(taskPayload, null, 2));
+    
     const taskResp = await pfFetch(`/mockup-generator/create-task/${productId}`, {
       method: 'POST',
       body: JSON.stringify(taskPayload)
     });
     
+    console.log(`📋 Task response:`, taskResp);
+    
     const taskKey = taskResp?.result?.task_key;
-    if (!taskKey) return {};
+    if (!taskKey) {
+      console.log(`❌ No task key received:`, taskResp);
+      return {};
+    }
+    
+    console.log(`🔑 Task key: ${taskKey}`);
     
     // Wait for generation (with timeout)
     let attempts = 0;
@@ -104,10 +113,15 @@ async function generateMissingMockups(productId, variantIds, existingFiles, prod
     
     while (attempts < maxAttempts) {
       await new Promise(r => setTimeout(r, 5000)); // Wait 5 seconds
+      attempts++;
+      
+      console.log(`⏰ Attempt ${attempts}/${maxAttempts}: Checking task status...`);
       
       const resultResp = await pfFetch(`/mockup-generator/task?task_key=${taskKey}`, {
         method: 'GET'
       });
+      
+      console.log(`📊 Task status response:`, resultResp?.result?.status, resultResp?.result?.error || '');
       
       if (resultResp?.result?.status === 'completed') {
         const mockups = resultResp.result.mockups || [];
@@ -128,11 +142,9 @@ async function generateMissingMockups(productId, variantIds, existingFiles, prod
       }
       
       if (resultResp?.result?.status === 'failed') {
-        console.warn('Mockup generation failed:', resultResp.result.error);
+        console.warn('❌ Mockup generation failed:', resultResp.result.error);
         break;
       }
-      
-      attempts++;
     }
     
     return {};
