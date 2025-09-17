@@ -674,6 +674,63 @@ function uniqBy(arr, keyFn){ const m=new Map(); for(const it of (arr||[])){ cons
 function uniq(arr){ return Array.from(new Set(arr||[])); }
 function safeUrl(u){ return String(u||'').replace(/^http:\/\//i,'https://'); }
 
+// ===== Supabase Storage helpers for persistent mockups =====
+const supaAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { auth: { persistSession: false } });
+
+async function ensureBucketPublic(bucket = "mockups") {
+  try {
+    await supaAdmin.storage.createBucket(bucket, { public: true });
+  } catch (e) {
+    const msg = (e?.message || "").toLowerCase();
+    if (!msg.includes("already exists")) console.warn("createBucket warn:", e?.message || e);
+  }
+  return bucket;
+}
+
+async function fetchBuffer(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`download failed ${r.status} ${url}`);
+  return Buffer.from(await r.arrayBuffer());
+}
+
+function guessContentType(url) {
+  const u = url.split("?")[0].toLowerCase();
+  if (u.endsWith(".png")) return "image/png";
+  if (u.endsWith(".webp")) return "image/webp";
+  if (u.endsWith(".jpg") || u.endsWith(".jpeg")) return "image/jpeg";
+  return "image/png";
+}
+
+async function uploadMockupAndGetPublicUrl({ bucket = "mockups", productId, color, angle, sourceUrl }) {
+  await ensureBucketPublic(bucket);
+  const ct = guessContentType(sourceUrl);
+  const buf = await fetchBuffer(sourceUrl);
+  const safeColor = String(color).toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  const path = `${productId}/${safeColor}/${angle}${ct === "image/png" ? ".png" : ct === "image/webp" ? ".webp" : ".jpg"}`;
+  const { error: upErr } = await supaAdmin.storage.from(bucket).upload(path, buf, { contentType: ct, upsert: true });
+  if (upErr) throw upErr;
+  const { data: pub } = supaAdmin.storage.from(bucket).getPublicUrl(path);
+  return pub.publicUrl;
+}
+
+async function mergeCustomMockupsInDB(productId, mapByColor) {
+  let current = null;
+  try {
+    const { data } = await supabase.from("product_overrides").select("*").eq("product_id", productId).maybeSingle();
+    current = data || { product_id: productId };
+  } catch (e) { console.warn("fetch overrides error:", e?.message || e); }
+
+  const next = current?.custom_mockups || {};
+  for (const [color, angles] of Object.entries(mapByColor)) {
+    next[color] = { ...(next[color] || {}), ...angles };
+  }
+
+  const payload = { product_id: productId, custom_mockups: next };
+  const { error } = await supabase.from("product_overrides").upsert(payload, { onConflict: "product_id" });
+  if (error) throw error;
+  return next;
+}
+
 function parseColorSizeFromVariant(v){
   const SIZE_LIST = ['XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
   const explicitColor = (v.color || v.product_color || '').trim();
@@ -1626,7 +1683,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         if (hiddenAll.size) {
           images = (images || []).filter(u => !hiddenAll.has(String(u)));
         }
-        // Merge color-aware overrides
+        // Merge color-aware overrides (includes persistent mockups from Supabase Storage)
         if (override.custom_by_color && typeof override.custom_by_color === 'object') {
           const byColor = override.custom_by_color;
           for (const [colorKey, val] of Object.entries(byColor)) {
@@ -1642,6 +1699,22 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             addAll(v.back,  dst.views.back);
             addAll(v.left,  dst.views.left);
             addAll(v.right, dst.views.right);
+          }
+        }
+        
+        // NEW: hard-merge persisted custom mockups (from Storage) so they take priority
+        if (override.custom_mockups && typeof override.custom_mockups === 'object') {
+          for (const [color, angles] of Object.entries(override.custom_mockups)) {
+            const lc = color.toLowerCase();
+            if (!galleryByColor[lc]) galleryByColor[lc] = { views: {}, images: [] };
+            for (const a of ["front","back","left","right"]) {
+              if (angles[a]) {
+                galleryByColor[lc].views[a] = angles[a];
+                if (!galleryByColor[lc].images.includes(angles[a])) {
+                  galleryByColor[lc].images.push(angles[a]);
+                }
+              }
+            }
           }
         }
         if (override.title_override) {
@@ -1911,17 +1984,16 @@ app.get("/admin/promo/onedollar", corsAllow, (req, res) => {
   res.json({ ok:true, query: code || null, isOneDollar: isOneDollarCode(code) });
 });
 
-// Generate missing mockups for a product (admin tool)
+// Generate missing mockups for a product (admin tool) - now persists to Supabase Storage
 app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) => {
   try {
     if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
     
-    const { productId, variantIds } = req.body || {};
-    if (!productId || !Array.isArray(variantIds)) {
-      return res.status(400).json({ error: 'productId and variantIds array required' });
-    }
-    
-    // Get existing files from the product
+    const productId = String(req.body?.productId || "").trim();
+    const variantIds = Array.isArray(req.body?.variantIds) ? req.body.variantIds : undefined;
+    if (!productId) return res.status(400).json({ ok:false, error:"missing productId" });
+
+    // 1) Get existing files from the product
     const productResp = await pfFetch(`/store/products/${productId}`, { method: 'GET' });
     const svs = productResp?.result?.sync_variants || [];
     const existingFiles = [];
@@ -1932,18 +2004,38 @@ app.post("/admin/mockups/generate", corsAllow, express.json(), async (req, res) 
       }
     }
     
-    const generatedMockups = await generateMissingMockups(productId, variantIds, existingFiles);
-    
+    // 2) Generate temporary mockups via Printful API
+    const angleUrlsByColor = await generateMissingMockups(productId, variantIds || svs.map(sv => sv.variant_id), existingFiles);
+
+    // 3) Upload each angle to Supabase Storage → get permanent public URLs
+    const persisted = {};
+    for (const [color, angles] of Object.entries(angleUrlsByColor || {})) {
+      const out = {};
+      for (const angle of ["front","back","left","right"]) {
+        const src = angles[angle];
+        if (!src || !Array.isArray(src) || !src.length) continue;
+        try {
+          const publicUrl = await uploadMockupAndGetPublicUrl({ productId, color, angle, sourceUrl: src[0] });
+          out[angle] = publicUrl;
+        } catch (e) {
+          console.warn(`Failed to upload ${color}/${angle}:`, e.message);
+        }
+      }
+      if (Object.keys(out).length) persisted[color] = out;
+    }
+
+    // 4) Merge into product_overrides.custom_mockups
+    const merged = await mergeCustomMockupsInDB(productId, persisted);
+
     res.json({ 
       ok: true, 
       productId, 
-      variantIds, 
-      generatedMockups,
-      message: 'Mockup generation completed'
+      custom_mockups: merged,
+      message: 'Mockup generation and storage completed'
     });
   } catch (e) {
     console.error('Admin mockup generation error:', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
