@@ -1878,25 +1878,9 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
           });
         }
         
-        // TEMPORARY: Create basic angle fallbacks from front image for better UX
-        const frontImage = views.front || (g.images && g.images[0]);
-        if (frontImage) {
-          // Ensure all angles are available, using front image as fallback
-          if (!views.front) views.front = frontImage;
-          if (!views.back) views.back = frontImage;
-          if (!views.left) views.left = frontImage;  
-          if (!views.right) views.right = frontImage;
-          console.log(`📸 Added angle fallbacks for color ${colorKey} using image: ${frontImage.substring(0, 50)}...`);
-        }
-        
-        // Also fill missing angles from defaultColor as additional fallback
-        const defKey = String(defaultColor||'').toLowerCase();
-        const defViews = (defKey && galleryByColor[defKey]?.views) ? galleryByColor[defKey].views : {};
-        for (const k of ['front','back','left','right']) { 
-          if (!views[k] && defViews && defViews[k]) { 
-            views[k] = defViews[k]; 
-            if (!g.images.includes(defViews[k])) g.images.push(defViews[k]); 
-          } 
+        // No global angle fallbacks: products without explicit angles should only show 'front'
+        if (!views.front && Array.isArray(g.images) && g.images.length) {
+          views.front = g.images[0];
         }
         g.views = views;
         galleryByColor[colorKey] = g;
@@ -1912,56 +1896,55 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       if (key) displayByKey[key] = display;
     }
 
-    // HARDCODED: Custom mockups for Distressed Flag Tee (392073769)
+    // HARDCODED: Distressed Flag Tee (392073769) angles via GitHub raw
     if (String(prodId) === '392073769') {
-      const baseUrl = 'https://catfishempire.netlify.app/mockups/distressed-flag-tee';
-      const customMockups = {
-        'black': {
-          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-front-68cb1a6c2d7df.jpg`,
-          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-back-68cb1a6c2c67b.jpg`,
-          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-left-68cb1a6c2fd83.jpg`,
-          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-black-right-68cb1a6c3084b.jpg`
-        },
-        'white': {
-          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-front-68cb1a6c2df88.jpg`,
-          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-back-68cb1a6c2cedb.jpg`,
-          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-left-68cb1a6c3031c.jpg`,
-          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-white-right-68cb1a6c30dc1.jpg`
-        },
-        'navy': {
-          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-front-68cb1a6c2dcb0.jpg`,
-          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-back-68cb1a6c2cae3.jpg`,
-          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-left-68cb1a6c30061.jpg`,
-          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-navy-right-68cb1a6c30b25.jpg`
-        },
-        'red': {
-          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-front-68cb1a6c2ddc4.jpg`,
-          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-back-68cb1a6c2cbf8.jpg`,
-          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-left-68cb1a6c30167.jpg`,
-          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-red-right-68cb1a6c30c2a.jpg`
-        },
-        'military green': {
-          front: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-front-68cb1a6c2dbd3.jpg`,
-          back: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-back-68cb1a6c2ca59.jpg`,
-          left: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-left-68cb1a6c2ffda.jpg`,
-          right: `${baseUrl}/unisex-basic-softstyle-t-shirt-military-green-right-68cb1a6c30a9d.jpg`
-        }
-      };
-
-      // Merge custom mockups directly into galleryByColor
-      for (const [colorName, angles] of Object.entries(customMockups)) {
-        const normalizedColor = colorKey(colorName);
-        if (!galleryByColor[normalizedColor]) {
-          galleryByColor[normalizedColor] = { views: {}, images: [] };
-        }
-        
-        // Add all angles
-        for (const [angle, url] of Object.entries(angles)) {
-          galleryByColor[normalizedColor].views[angle] = url;
-          if (!galleryByColor[normalizedColor].images.includes(url)) {
-            galleryByColor[normalizedColor].images.push(url);
+      try {
+        const base = 'https://raw.githubusercontent.com/RICHMEDIAEMPIRE/catfish-empire/main/mockups/distressed-flag-tee';
+        const colorsMap = {
+          'black': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-black-front-68cb1a6c2d7df.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-black-back-68cb1a6c2c67b.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-black-left-68cb1a6c2fd83.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-black-right-68cb1a6c3084b.jpg`,
+          },
+          'white': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-white-front-68cb1a6c2df88.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-white-back-68cb1a6c2cedb.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-white-left-68cb1a6c3031c.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-white-right-68cb1a6c30dc1.jpg`,
+          },
+          'navy': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-navy-front-68cb1a6c2dcb0.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-navy-back-68cb1a6c2cae3.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-navy-left-68cb1a6c30061.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-navy-right-68cb1a6c30b25.jpg`,
+          },
+          'red': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-red-front-68cb1a6c2ddc4.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-red-back-68cb1a6c2cbf8.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-red-left-68cb1a6c30167.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-red-right-68cb1a6c30c2a.jpg`,
+          },
+          'military green': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-military-green-front-68cb1a6c2dbd3.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-military-green-back-68cb1a6c2ca59.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-military-green-left-68cb1a6c2ffda.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-military-green-right-68cb1a6c30a9d.jpg`,
+          },
+        };
+        for (const [ck, views] of Object.entries(colorsMap)) {
+          const key = String(ck).toLowerCase();
+          if (!galleryByColor[key]) galleryByColor[key] = { views: {}, images: [] };
+          for (const a of ['front','back','left','right']) {
+            const url = views[a];
+            if (url) {
+              galleryByColor[key].views[a] = url;
+              if (!galleryByColor[key].images.includes(url)) galleryByColor[key].images.push(url);
+            }
           }
         }
+      } catch (e) {
+        console.warn('flag tee hard-wire merge failed:', e?.message || e);
       }
     }
 
