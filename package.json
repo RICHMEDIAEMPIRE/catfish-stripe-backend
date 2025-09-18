@@ -9,7 +9,8 @@
     "express-session": "^1.18.2",
     "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.5",
-    "stripe": "^18.3.0"
+    "stripe": "^18.3.0",
+    "adm-zip": "^0.5.10"
   },
   "name": "catfish-stripe-backend",
   "version": "1.0.0",

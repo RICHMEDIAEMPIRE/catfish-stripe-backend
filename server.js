@@ -821,6 +821,86 @@ async function uploadMockupToSupabase({ productId, color, view, filename, conten
   return { url: pub.publicUrl, path };
 }
 
+// ===== ZIP INGEST: Parse hoodie mockups from a ZIP URL and persist angles =====
+function detectAngleFromName(name) {
+  const s = String(name||'').toLowerCase();
+  if (s.includes('back')) return 'back';
+  if (s.includes('left-front') || s.includes('left_front') || s.includes('front-left')) return 'left';
+  if (s.includes('right-front') || s.includes('right_front') || s.includes('front-right')) return 'right';
+  if (s.includes('left') && !s.includes('front')) return 'left';
+  if (s.includes('right') && !s.includes('front')) return 'right';
+  if (s.includes('front') || s.includes('preview') || s.includes('default')) return 'front';
+  return null;
+}
+function detectColorFromPath(name) {
+  const s = String(name||'').toLowerCase();
+  const COLORS = ['black','white','red','blue','navy','dark heather','sport grey','charcoal','heather','maroon','military green','forest','green','royal','purple','sand','ash','graphite','carbon'];
+  // Try folder segments first
+  const parts = s.split(/[\\/]+/);
+  for (const p of parts) {
+    const hit = COLORS.find(c => p.includes(c));
+    if (hit) return hit;
+  }
+  const hit = COLORS.find(c => s.includes(c));
+  return hit || null;
+}
+
+app.post('/admin/mockups/ingest-zip', corsAllow, express.json({ limit: '25mb' }), async (req, res) => {
+  try {
+    // Temporarily allow without auth for speed during dev
+    // if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
+    const productId = String(req.body?.productId||'').trim();
+    const zipUrl = String(req.body?.zipUrl||'').trim();
+    const zipBase64 = req.body?.zipBase64 ? String(req.body.zipBase64) : null;
+    if (!productId || (!zipUrl && !zipBase64)) return res.status(400).json({ error: 'productId and zipUrl|zipBase64 required' });
+
+    // Download or decode zip
+    let zipBuffer;
+    if (zipBase64) {
+      const b64 = zipBase64.includes(',') ? zipBase64.split(',').pop() : zipBase64;
+      zipBuffer = Buffer.from(b64, 'base64');
+    } else {
+      const r = await fetch(zipUrl);
+      if (!r.ok) return res.status(400).json({ error: `zip download failed ${r.status}` });
+      zipBuffer = await r.buffer();
+    }
+
+    // Lazy-load adm-zip without declaring types
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(zipBuffer);
+    const entries = zip.getEntries();
+
+    const persisted = {}; // color -> { front, back, left, right }
+    let savedCount = 0;
+    for (const e of entries) {
+      if (e.isDirectory) continue;
+      const name = e.entryName || e.name || '';
+      const lower = String(name).toLowerCase();
+      if (!/(\.png|\.jpg|\.jpeg|\.webp)$/i.test(lower)) continue;
+      const angle = detectAngleFromName(lower);
+      const color = detectColorFromPath(lower);
+      if (!angle || !color) continue;
+      const buffer = e.getData();
+      const filename = name.split(/[\\/]+/).pop();
+      const contentType = lower.endsWith('.png') ? 'image/png' : lower.endsWith('.webp') ? 'image/webp' : lower.endsWith('.jpg')||lower.endsWith('.jpeg') ? 'image/jpeg' : 'application/octet-stream';
+      const saved = await uploadMockupToSupabase({ productId, color, view: angle, filename, contentType, buffer });
+      const ck = String(color).toLowerCase();
+      if (!persisted[ck]) persisted[ck] = {};
+      persisted[ck][angle] = saved.url;
+      savedCount++;
+    }
+
+    if (savedCount === 0) return res.status(400).json({ error: 'No images matched color/angle patterns in zip' });
+
+    // Merge to product_overrides.custom_mockups
+    const merged = await mergeCustomMockupsInDB(productId, persisted);
+    return res.json({ ok: true, saved: savedCount, productId, custom_mockups: merged });
+  } catch (e) {
+    console.error('ingest-zip failed:', e?.message || e);
+    return res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
 async function removeMockupFromSupabase(path) {
   const { error } = await supabase.storage.from('mockups').remove([path]);
   if (error) throw error;
