@@ -901,6 +901,52 @@ app.post('/admin/mockups/ingest-zip', corsAllow, express.json({ limit: '25mb' })
   }
 });
 
+// Helper: ingest a ZIP from GitHub (frontend repo) and persist angles, returning map for immediate merge
+let __ingestLocks = new Set();
+async function ingestZipFromRepoAndPersist({ productId, zipPathInRepo }) {
+  const lockKey = `${productId}|${zipPathInRepo}`;
+  if (__ingestLocks.has(lockKey)) return null;
+  __ingestLocks.add(lockKey);
+  try {
+    const rawUrl = `https://raw.githubusercontent.com/RICHMEDIAEMPIRE/catfish-empire/main/${encodeURIComponent(zipPathInRepo).replace(/%2F/g,'/')}`;
+    const r = await fetch(rawUrl);
+    if (!r.ok) throw new Error(`zip download failed ${r.status}`);
+    const zipBuffer = await r.buffer();
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(zipBuffer);
+    const entries = zip.getEntries();
+    const persisted = {}; // color -> { front, back, left, right }
+    let savedCount = 0;
+    for (const e of entries) {
+      if (e.isDirectory) continue;
+      const name = e.entryName || e.name || '';
+      const lower = String(name).toLowerCase();
+      if (!/(\.png|\.jpg|\.jpeg|\.webp)$/i.test(lower)) continue;
+      const angle = detectAngleFromName(lower);
+      const color = detectColorFromPath(lower);
+      if (!angle || !color) continue;
+      const buffer = e.getData();
+      const filename = name.split(/[\\/]+/).pop();
+      const contentType = lower.endsWith('.png') ? 'image/png' : lower.endsWith('.webp') ? 'image/webp' : lower.endsWith('.jpg')||lower.endsWith('.jpeg') ? 'image/jpeg' : 'application/octet-stream';
+      const saved = await uploadMockupToSupabase({ productId, color, view: angle, filename, contentType, buffer });
+      const ck = String(color).toLowerCase();
+      if (!persisted[ck]) persisted[ck] = {};
+      persisted[ck][angle] = saved.url;
+      savedCount++;
+    }
+    if (savedCount > 0) {
+      await mergeCustomMockupsInDB(productId, persisted);
+      return persisted;
+    }
+    return null;
+  } catch (e) {
+    console.warn('ingestZipFromRepoAndPersist failed:', e?.message || e);
+    return null;
+  } finally {
+    __ingestLocks.delete(lockKey);
+  }
+}
+
 async function removeMockupFromSupabase(path) {
   const { error } = await supabase.storage.from('mockups').remove([path]);
   if (error) throw error;
@@ -1913,6 +1959,30 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             galleryByColor[normalizedColor].images.push(url);
           }
         }
+      }
+    }
+
+    // NEW: Hoodie mockups ingestion (392073598) from frontend repo ZIP, then merge
+    if (String(prodId) === '392073598') {
+      try {
+        const persisted = await ingestZipFromRepoAndPersist({
+          productId: String(prodId),
+          zipPathInRepo: 'mockups/catfish empire hooked on freedom hoodie.zip'
+        });
+        if (persisted && typeof persisted === 'object') {
+          for (const [color, angles] of Object.entries(persisted)) {
+            const lc = String(color).toLowerCase();
+            if (!galleryByColor[lc]) galleryByColor[lc] = { views: {}, images: [] };
+            for (const a of ['front','back','left','right']) {
+              if (angles[a]) {
+                galleryByColor[lc].views[a] = angles[a];
+                if (!galleryByColor[lc].images.includes(angles[a])) galleryByColor[lc].images.push(angles[a]);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('hoodie ingest merge failed:', e?.message || e);
       }
     }
 
