@@ -1965,24 +1965,125 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     // NEW: Hoodie mockups ingestion (392073598) from frontend repo ZIP, then merge
     if (String(prodId) === '392073598') {
       try {
-        const persisted = await ingestZipFromRepoAndPersist({
-          productId: String(prodId),
-          zipPathInRepo: 'mockups/catfish empire hooked on freedom hoodie.zip'
+        // Hard-wire GitHub raw URLs for hoodie angles by color
+        const base = 'https://raw.githubusercontent.com/RICHMEDIAEMPIRE/catfish-empire/main/mockups/hoodie';
+        const hood = (color) => ({
+          front: `${base}/unisex-heavy-blend-hoodie-${color}-front-68cb4c5c4f*.jpg`.replace('*',''),
+          back: `${base}/unisex-heavy-blend-hoodie-${color}-back-68cb4c5c4f*.jpg`.replace('*',''),
+          left: `${base}/unisex-heavy-blend-hoodie-${color}-left-front-68cb4c5c50*.jpg`.replace('*',''),
+          right: `${base}/unisex-heavy-blend-hoodie-${color}-right-front-68cb4c5c51*.jpg`.replace('*',''),
         });
-        if (persisted && typeof persisted === 'object') {
-          for (const [color, angles] of Object.entries(persisted)) {
-            const lc = String(color).toLowerCase();
-            if (!galleryByColor[lc]) galleryByColor[lc] = { views: {}, images: [] };
-            for (const a of ['front','back','left','right']) {
-              if (angles[a]) {
-                galleryByColor[lc].views[a] = angles[a];
-                if (!galleryByColor[lc].images.includes(angles[a])) galleryByColor[lc].images.push(angles[a]);
-              }
+        const colorsMap = {
+          'black': {
+            front: `${base}/unisex-heavy-blend-hoodie-black-front-68cb4c5c4ecf4.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-black-back-68cb4c5c4f94d.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-black-left-front-68cb4c5c503ad.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-black-right-front-68cb4c5c50de3.jpg`,
+          },
+          'charcoal': {
+            front: `${base}/unisex-heavy-blend-hoodie-charcoal-front-68cb4c5c4eedd.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-charcoal-back-68cb4c5c4f9ef.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-charcoal-left-front-68cb4c5c50464.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-charcoal-right-front-68cb4c5c50e96.jpg`,
+          },
+          'dark chocolate': {
+            front: `${base}/unisex-heavy-blend-hoodie-dark-chocolate-front-68cb4c5c4ef7a.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-dark-chocolate-back-68cb4c5c4fa76.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-dark-chocolate-left-front-68cb4c5c504f3.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-dark-chocolate-right-front-68cb4c5c50f24.jpg`,
+          },
+          'dark heather': {
+            front: `${base}/unisex-heavy-blend-hoodie-dark-heather-front-68cb4c5c4f007.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-dark-heather-back-68cb4c5c4faf9.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-dark-heather-left-front-68cb4c5c50581.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-dark-heather-right-front-68cb4c5c50fb5.jpg`,
+          },
+          'forest green': {
+            front: `${base}/unisex-heavy-blend-hoodie-forest-green-front-68cb4c5c4f09d.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-forest-green-back-68cb4c5c4fb7c.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-forest-green-left-front-68cb4c5c5060c.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-forest-green-right-front-68cb4c5c51042.jpg`,
+          },
+          'graphite heather': {
+            front: `${base}/unisex-heavy-blend-hoodie-graphite-heather-front-68cb4c5c4f615.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-graphite-heather-back-68cb4c5c50087.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-graphite-heather-left-front-68cb4c5c50b30.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-graphite-heather-right-front-68cb4c5c51581.jpg`,
+          },
+          'heliconia': {
+            front: `${base}/unisex-heavy-blend-hoodie-heliconia-front-68cb4c5c4f58c.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-heliconia-back-68cb4c5c50007.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-heliconia-left-front-68cb4c5c50aad.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-heliconia-right-front-68cb4c5c514fe.jpg`,
+          },
+          'irish green': {
+            front: `${base}/unisex-heavy-blend-hoodie-irish-green-front-68cb4c5c4f128.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-irish-green-back-68cb4c5c4fbff.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-irish-green-left-front-68cb4c5c50692.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-irish-green-right-front-68cb4c5c510c8.jpg`,
+          },
+          'light pink': {
+            front: `${base}/unisex-heavy-blend-hoodie-light-pink-front-68cb4c5c4f1b2.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-light-pink-back-68cb4c5c4fc8b.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-light-pink-left-front-68cb4c5c50717.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-light-pink-right-front-68cb4c5c5114e.jpg`,
+          },
+          'maroon': {
+            front: `${base}/unisex-heavy-blend-hoodie-maroon-front-68cb4c5c4f23a.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-maroon-back-68cb4c5c4fd0e.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-maroon-left-front-68cb4c5c5079b.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-maroon-right-front-68cb4c5c511d3.jpg`,
+          },
+          'military green': {
+            front: `${base}/unisex-heavy-blend-hoodie-military-green-front-68cb4c5c4f2c9.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-military-green-back-68cb4c5c4fd8d.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-military-green-left-front-68cb4c5c5081b.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-military-green-right-front-68cb4c5c51254.jpg`,
+          },
+          'navy': {
+            front: `${base}/unisex-heavy-blend-hoodie-navy-front-68cb4c5c4f352.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-navy-back-68cb4c5c4fe0d.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-navy-left-front-68cb4c5c508a4.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-navy-right-front-68cb4c5c512d7.jpg`,
+          },
+          'orange': {
+            front: `${base}/unisex-heavy-blend-hoodie-orange-front-68cb4c5c4f6a1.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-orange-back-68cb4c5c50108.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-orange-left-front-68cb4c5c50bb5.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-orange-right-front-68cb4c5c51608.jpg`,
+          },
+          'royal': {
+            front: `${base}/unisex-heavy-blend-hoodie-royal-front-68cb4c5c4f3d7.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-royal-back-68cb4c5c4fe8a.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-royal-left-front-68cb4c5c50926.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-royal-right-front-68cb4c5c51360.jpg`,
+          },
+          'sand': {
+            front: `${base}/unisex-heavy-blend-hoodie-sand-front-68cb4c5c4f468.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-sand-back-68cb4c5c4ff0b.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-sand-left-front-68cb4c5c509aa.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-sand-right-front-68cb4c5c513f6.jpg`,
+          },
+          'white': {
+            front: `${base}/unisex-heavy-blend-hoodie-white-front-68cb4c5c4f504.jpg`,
+            back: `${base}/unisex-heavy-blend-hoodie-white-back-68cb4c5c4ff89.jpg`,
+            left: `${base}/unisex-heavy-blend-hoodie-white-left-front-68cb4c5c50a2b.jpg`,
+            right: `${base}/unisex-heavy-blend-hoodie-white-right-front-68cb4c5c5147b.jpg`,
+          },
+        };
+        for (const [ck, views] of Object.entries(colorsMap)) {
+          const key = String(ck).toLowerCase();
+          if (!galleryByColor[key]) galleryByColor[key] = { views: {}, images: [] };
+          for (const a of ['front','back','left','right']) {
+            const url = views[a];
+            if (url) {
+              galleryByColor[key].views[a] = url;
+              if (!galleryByColor[key].images.includes(url)) galleryByColor[key].images.push(url);
             }
           }
         }
       } catch (e) {
-        console.warn('hoodie ingest merge failed:', e?.message || e);
+        console.warn('hoodie hard-wire merge failed:', e?.message || e);
       }
     }
 
