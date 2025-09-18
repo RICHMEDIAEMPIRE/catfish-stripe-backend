@@ -845,7 +845,7 @@ function detectColorFromPath(name) {
   return hit || null;
 }
 
-app.post('/admin/mockups/ingest-zip', corsAllow, express.json({ limit: '25mb' }), async (req, res) => {
+app.post('/admin/mockups/ingest-zip', cors(), express.json({ limit: '25mb' }), async (req, res) => {
   try {
     // Temporarily allow without auth for speed during dev
     // if (!req.session?.authenticated) return res.status(403).json({ error: 'Not logged in' });
