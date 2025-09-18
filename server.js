@@ -1907,11 +1907,59 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             left: `${base}/unisex-basic-softstyle-t-shirt-black-left-68cb1a6c2fd83.jpg`,
             right: `${base}/unisex-basic-softstyle-t-shirt-black-right-68cb1a6c3084b.jpg`,
           },
-          'white': {
-            front: `${base}/unisex-basic-softstyle-t-shirt-white-front-68cb1a6c2df88.jpg`,
-            back: `${base}/unisex-basic-softstyle-t-shirt-white-back-68cb1a6c2cedb.jpg`,
-            left: `${base}/unisex-basic-softstyle-t-shirt-white-left-68cb1a6c3031c.jpg`,
-            right: `${base}/unisex-basic-softstyle-t-shirt-white-right-68cb1a6c30dc1.jpg`,
+          'dark chocolate': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-dark-chocolate-front-68cb1a6c2d915.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-dark-chocolate-back-68cb1a6c2c891.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-dark-chocolate-left-68cb1a6c2fe34.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-dark-chocolate-right-68cb1a6c308fc.jpg`,
+          },
+          'dark heather grey': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-dark-heather-grey-front-68cb1a6c2e250.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-dark-heather-grey-back-68cb1a6c2d30b.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-dark-heather-grey-left-68cb1a6c3053a.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-dark-heather-grey-right-68cb1a6c30fdb.jpg`,
+          },
+          'heather navy': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-heather-navy-front-68cb1a6c2da0d.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-heather-navy-back-68cb1a6c2c932.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-heather-navy-left-68cb1a6c2fec1.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-heather-navy-right-68cb1a6c30986.jpg`,
+          },
+          'heather red': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-heather-red-front-68cb1a6c2e11e.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-heather-red-back-68cb1a6c2d104.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-heather-red-left-68cb1a6c3042a.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-heather-red-right-68cb1a6c30ecc.jpg`,
+          },
+          'heliconia': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-heliconia-front-68cb1a6c2e2f3.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-heliconia-back-68cb1a6c2d413.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-heliconia-left-68cb1a6c305c4.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-heliconia-right-68cb1a6c31064.jpg`,
+          },
+          'ice grey': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-ice-grey-front-68cb1a6c2e1ae.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-ice-grey-back-68cb1a6c2d203.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-ice-grey-left-68cb1a6c304b4.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-ice-grey-right-68cb1a6c30f54.jpg`,
+          },
+          'light blue': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-light-blue-front-68cb1a6c2dadb.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-light-blue-back-68cb1a6c2c9c5.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-light-blue-left-68cb1a6c2ff4f.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-light-blue-right-68cb1a6c30a14.jpg`,
+          },
+          'military green': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-military-green-front-68cb1a6c2dbd3.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-military-green-back-68cb1a6c2ca59.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-military-green-left-68cb1a6c2ffda.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-military-green-right-68cb1a6c30a9d.jpg`,
+          },
+          'natural': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-natural-front-68cb1a6c2e074.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-natural-back-68cb1a6c2cff8.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-natural-left-68cb1a6c303a3.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-natural-right-68cb1a6c30e47.jpg`,
           },
           'navy': {
             front: `${base}/unisex-basic-softstyle-t-shirt-navy-front-68cb1a6c2dcb0.jpg`,
@@ -1919,17 +1967,35 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             left: `${base}/unisex-basic-softstyle-t-shirt-navy-left-68cb1a6c30061.jpg`,
             right: `${base}/unisex-basic-softstyle-t-shirt-navy-right-68cb1a6c30b25.jpg`,
           },
+          'purple': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-purple-front-68cb1a6c2dd3d.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-purple-back-68cb1a6c2cb71.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-purple-left-68cb1a6c300e2.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-purple-right-68cb1a6c30ba5.jpg`,
+          },
           'red': {
             front: `${base}/unisex-basic-softstyle-t-shirt-red-front-68cb1a6c2ddc4.jpg`,
             back: `${base}/unisex-basic-softstyle-t-shirt-red-back-68cb1a6c2cbf8.jpg`,
             left: `${base}/unisex-basic-softstyle-t-shirt-red-left-68cb1a6c30167.jpg`,
             right: `${base}/unisex-basic-softstyle-t-shirt-red-right-68cb1a6c30c2a.jpg`,
           },
-          'military green': {
-            front: `${base}/unisex-basic-softstyle-t-shirt-military-green-front-68cb1a6c2dbd3.jpg`,
-            back: `${base}/unisex-basic-softstyle-t-shirt-military-green-back-68cb1a6c2ca59.jpg`,
-            left: `${base}/unisex-basic-softstyle-t-shirt-military-green-left-68cb1a6c2ffda.jpg`,
-            right: `${base}/unisex-basic-softstyle-t-shirt-military-green-right-68cb1a6c30a9d.jpg`,
+          'sand': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-sand-front-68cb1a6c2de4c.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-sand-back-68cb1a6c2ccbf.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-sand-left-68cb1a6c30208.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-sand-right-68cb1a6c30cb0.jpg`,
+          },
+          'sport grey': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-sport-grey-front-68cb1a6c2ded2.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-sport-grey-back-68cb1a6c2cdcf.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-sport-grey-left-68cb1a6c30292.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-sport-grey-right-68cb1a6c30d37.jpg`,
+          },
+          'white': {
+            front: `${base}/unisex-basic-softstyle-t-shirt-white-front-68cb1a6c2df88.jpg`,
+            back: `${base}/unisex-basic-softstyle-t-shirt-white-back-68cb1a6c2cedb.jpg`,
+            left: `${base}/unisex-basic-softstyle-t-shirt-white-left-68cb1a6c3031c.jpg`,
+            right: `${base}/unisex-basic-softstyle-t-shirt-white-right-68cb1a6c30dc1.jpg`,
           },
         };
         for (const [ck, views] of Object.entries(colorsMap)) {
