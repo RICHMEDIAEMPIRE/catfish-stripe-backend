@@ -1834,18 +1834,21 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       console.warn('product_overrides not applied:', e.message);
     }
 
-    // Pick defaultColor: first variant's color that we have cover for; else first color; else null
+    // Pick defaultColor: ensure we have a valid front image for the default
     let defaultColor = null;
-    // choose color with most views; tie-break alphabetically
     const colorScores = colors.map(c => {
       const key = String(c||'').toLowerCase();
-      const g = galleryByColor[key]?.views || {};
-      const score = ['front','back','left','right','left-front','right-front'].reduce((n,k2)=> n + (g[k2]?1:0), 0);
-      return { c, score };
+      const g = galleryByColor[key] || {};
+      const views = g.views || {};
+      const hasFront = !!views.front;
+      const score = (hasFront ? 10 : 0) + ['back','left','right','left-front','right-front']
+        .reduce((n,k2)=> n + (views[k2]?1:0), 0);
+      return { c, key, hasFront, score };
     });
     colorScores.sort((a,b)=> (b.score - a.score) || String(a.c).localeCompare(String(b.c)) );
-    defaultColor = colorScores[0] ? colorScores[0].c : (colors[0] || null);
-    const coverImage = coverByColor[String(defaultColor||'').toLowerCase()] || images[0] || null;
+    defaultColor = colorScores.find(x => x.hasFront)?.c || (colorScores[0]?.c || colors[0] || null);
+    const coverImage = (galleryByColor[String(defaultColor||'').toLowerCase()]?.views?.front)
+      || coverByColor[String(defaultColor||'').toLowerCase()] || images[0] || null;
 
     // Ensure every color has all angles - generate missing ones if needed
     try {
