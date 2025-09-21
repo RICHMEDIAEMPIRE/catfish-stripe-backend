@@ -1863,20 +1863,13 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
           if (!views[angle]) missingAngles.push(angle);
         }
         
-        // If we have some angles but missing others, try to generate them
+        // If we have some angles but missing others, optionally queue background generation (throttled)
         if (missingAngles.length > 0 && missingAngles.length < 4) {
-          // Auto-generate missing angles in background (don't block response)
-          setImmediate(async () => {
-            try {
-              const variantIds = variants.filter(v => (v.color||'').toLowerCase() === colorKey).map(v => v.id);
-              if (variantIds.length) {
-                const productName = product?.sync_product?.name || product?.name || '';
-                await generateMissingMockups(prodId, variantIds, [], productName);
-              }
-            } catch (e) {
-              console.warn('Background mockup generation failed:', e.message);
-            }
-          });
+          const AUTO_GEN = String(process.env.PRINTFUL_AUTO_GEN_MISSING || 'false').toLowerCase() === 'true';
+          if (AUTO_GEN) {
+            queuedColors = queuedColors || new Set();
+            if (!queuedColors.has(colorKey)) queuedColors.add(colorKey);
+          }
         }
         
         // No global angle fallbacks: products without explicit angles should only show 'front'
@@ -1885,6 +1878,30 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         }
         g.views = views;
         galleryByColor[colorKey] = g;
+      }
+      // Process any queued background generations sequentially to avoid 429
+      if (typeof queuedColors !== 'undefined' && queuedColors.size) {
+        setImmediate(async () => {
+          try {
+            const productName = (sp?.name || d?.name || '').toString();
+            for (const ck of Array.from(queuedColors)) {
+              try {
+                const vids = (svs || []).filter(v => {
+                  const cs = parseColorSize(v);
+                  return String(cs.color||'').toLowerCase() === ck;
+                }).map(v => v.variant_id || v.id).filter(Boolean);
+                if (vids.length) {
+                  await generateMissingMockups(prodId, vids, [], productName);
+                  await new Promise(r => setTimeout(r, 2000));
+                }
+              } catch (e) {
+                console.warn('Background mockup generation failed:', e?.message || e);
+              }
+            }
+          } catch (e) {
+            console.warn('Background mockup generation failed:', e?.message || e);
+          }
+        });
       }
     } catch(_) {}
 
