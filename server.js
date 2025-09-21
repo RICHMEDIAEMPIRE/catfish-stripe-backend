@@ -2187,6 +2187,70 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       }
     }
 
+    // HARDCODED: Mama Tribe Graphic Tee (393216161) angles via GitHub raw
+    if (String(prodId) === '393216161') {
+      try {
+        const base = 'https://raw.githubusercontent.com/RICHMEDIAEMPIRE/catfish-empire/main/mockups/mama%20tribe';
+        const colorsMap = {
+          'ash': {
+            front: `${base}/unisex-classic-tee-ash-front-68cf408bcd4be.png`,
+            back: `${base}/unisex-classic-tee-ash-back-68cf408bcdd57.png`,
+            left: `${base}/unisex-classic-tee-ash-left-front-68cf408bce3cf.png`,
+            right: `${base}/unisex-classic-tee-ash-left-front-68cf408bce3cf.png`,
+          },
+          'black': {
+            front: `${base}/unisex-classic-tee-black-front-68cf408bcd744.png`,
+            back: `${base}/unisex-classic-tee-black-back-68cf408bcde13.png`,
+            left: `${base}/unisex-classic-tee-black-left-front-68cf408bce487.png`,
+            right: `${base}/unisex-classic-tee-black-left-front-68cf408bce487.png`,
+          },
+          'charcoal': {
+            front: `${base}/unisex-classic-tee-charcoal-front-68cf408bcd7e9.png`,
+            back: `${base}/unisex-classic-tee-charcoal-back-68cf408bcdea6.png`,
+            left: `${base}/unisex-classic-tee-charcoal-left-front-68cf408bce525.png`,
+            right: `${base}/unisex-classic-tee-charcoal-left-front-68cf408bce525.png`,
+          },
+          'dark heather': {
+            front: `${base}/unisex-classic-tee-dark-heather-front-68cf408bcd91d.png`,
+            back: `${base}/unisex-classic-tee-dark-heather-back-68cf408bcdfc4.png`,
+            left: `${base}/unisex-classic-tee-dark-heather-left-front-68cf408bce64c.png`,
+            right: `${base}/unisex-classic-tee-dark-heather-left-front-68cf408bce64c.png`,
+          },
+          'light pink': {
+            front: `${base}/unisex-classic-tee-light-pink-front-68cf408bcd9ad.png`,
+            back: `${base}/unisex-classic-tee-light-pink-back-68cf408bce052.png`,
+            left: `${base}/unisex-classic-tee-light-pink-left-front-68cf408bce6db.png`,
+            right: `${base}/unisex-classic-tee-light-pink-left-front-68cf408bce6db.png`,
+          },
+          'sand': {
+            front: `${base}/unisex-classic-tee-sand-front-68cf408bcda3c.png`,
+            back: `${base}/unisex-classic-tee-sand-back-68cf408bce0e0.png`,
+            left: `${base}/unisex-classic-tee-sand-left-front-68cf408bce772.png`,
+            right: `${base}/unisex-classic-tee-sand-left-front-68cf408bce772.png`,
+          },
+          'white': {
+            front: `${base}/unisex-classic-tee-white-front-68cf408bcdac7.png`,
+            back: `${base}/unisex-classic-tee-white-back-68cf408bce180.png`,
+            left: `${base}/unisex-classic-tee-white-left-front-68cf408bce80e.png`,
+            right: `${base}/unisex-classic-tee-white-left-front-68cf408bce80e.png`,
+          },
+        };
+        for (const [ck, views] of Object.entries(colorsMap)) {
+          const key = String(ck).toLowerCase();
+          if (!galleryByColor[key]) galleryByColor[key] = { views: {}, images: [] };
+          for (const a of ['front','back','left','right']) {
+            const url = views[a];
+            if (url) {
+              galleryByColor[key].views[a] = url;
+              if (!galleryByColor[key].images.includes(url)) galleryByColor[key].images.push(url);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('mama tribe hard-wire merge failed:', e?.message || e);
+      }
+    }
+
     // 1) Normalize galleryByColor keys
     const normalizedGallery = {};
     for (const [c, bucket] of Object.entries(galleryByColor || {})) {
