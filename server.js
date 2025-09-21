@@ -1847,7 +1847,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
     // PRODUCT-SPECIFIC COLOR FILTERS
     // Mama Tribe™ Graphic Tee: only show colors selected at creation time
     if (String(prodId) === '393216161') {
-      const allowed = ['ash','black','charcoal','dark heather','light pink','sand','white'];
+      const allowed = ['ash','black','charcoal','dark chocolate','dark heather','light pink','sand','white'];
       const allowSet = new Set(allowed.map(s => s.toLowerCase()));
       colors = colors.filter(c => allowSet.has(String(c||'').toLowerCase()));
       // Filter variant/price matrices by allowed colors
@@ -2209,6 +2209,12 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
             back: `${base}/unisex-classic-tee-charcoal-back-68cf408bcdea6.png`,
             left: `${base}/unisex-classic-tee-charcoal-left-front-68cf408bce525.png`,
             right: `${base}/unisex-classic-tee-charcoal-left-front-68cf408bce525.png`,
+          },
+          'dark chocolate': {
+            front: `${base}/unisex-classic-tee-dark-chocolate-front-68cf408bcd889.png`,
+            back: `${base}/unisex-classic-tee-dark-chocolate-back-68cf408bcdf35.png`,
+            left: `${base}/unisex-classic-tee-dark-chocolate-left-front-68cf408bce5b6.png`,
+            right: `${base}/unisex-classic-tee-dark-chocolate-left-front-68cf408bce5b6.png`,
           },
           'dark heather': {
             front: `${base}/unisex-classic-tee-dark-heather-front-68cf408bcd91d.png`,
