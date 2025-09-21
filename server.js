@@ -1741,6 +1741,15 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
         const hiddenAll = new Set();
         // jsonb structure: custom_mockups { colorLower: { views, images } }, hidden_mockups { colorLower: [urls] }
         if (override.custom_mockups && typeof override.custom_mockups === 'object') {
+          // Mama Tribe: alias 'heather' -> 'dark heather' to match Printful color naming
+          if (String(prodId) === '393216161') {
+            try {
+              const cm = override.custom_mockups;
+              if (cm['heather'] && !cm['dark heather']) {
+                cm['dark heather'] = cm['heather'];
+              }
+            } catch(_) {}
+          }
           for (const colorKey of Object.keys(override.custom_mockups)) {
             const oc = override.custom_mockups[colorKey] || {};
             const dst = galleryByColor[colorKey] || { views:{}, images:[] };
