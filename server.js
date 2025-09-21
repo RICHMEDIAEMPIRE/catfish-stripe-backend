@@ -1835,6 +1835,27 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
       console.warn('product_overrides not applied:', e.message);
     }
 
+    // PRODUCT-SPECIFIC COLOR FILTERS
+    // Mama Tribe™ Graphic Tee: only show colors selected at creation time
+    if (String(prodId) === '393216161') {
+      const allowed = ['ash','black','charcoal','dark heather','light pink','sand','white'];
+      const allowSet = new Set(allowed.map(s => s.toLowerCase()));
+      colors = colors.filter(c => allowSet.has(String(c||'').toLowerCase()));
+      // Filter variant/price matrices by allowed colors
+      const nextMatrix = {}; const nextPrice = {};
+      for (const [key, vid] of Object.entries(variantMatrix||{})) {
+        const [c] = key.split('|');
+        if (allowSet.has(String(c||'').toLowerCase())) { nextMatrix[key] = vid; if (priceByKey[key]!=null) nextPrice[key] = priceByKey[key]; }
+      }
+      variantMatrix = nextMatrix; priceByKey = nextPrice;
+      // Filter gallery buckets
+      const nextGallery = {};
+      for (const [ck, g] of Object.entries(galleryByColor||{})) {
+        if (allowSet.has(String(ck||'').toLowerCase())) nextGallery[ck] = g;
+      }
+      galleryByColor = nextGallery;
+    }
+
     // Pick defaultColor: ensure we have a valid front image for the default
     let defaultColor = null;
     const colorScores = colors.map(c => {
