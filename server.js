@@ -1690,7 +1690,7 @@ app.get('/api/printful-product/:id', cors(), async (req, res) => {
 
     // Build variants, options, and matrix - exclude variants with missing price
     const variants = [];
-    const colors = [];
+    let colors = [];
     const sizes = [];
     let variantMatrix = {};
     let priceByKey = {};
