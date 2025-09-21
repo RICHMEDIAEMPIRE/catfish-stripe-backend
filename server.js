@@ -813,11 +813,12 @@ function buildGalleryByColor(syncVariants){
   return out;
 }
 async function uploadMockupToSupabase({ productId, color, view, filename, contentType, buffer }) {
+  await ensureBucketPublic('mockups');
   const safeView = (view || 'other').toLowerCase();
   const path = `printful/${String(productId)}/${String(color).toLowerCase()}/${safeView}/${filename}`;
-  const { error } = await supabase.storage.from('mockups').upload(path, buffer, { contentType: contentType || 'image/webp', upsert: true });
+  const { error } = await supaAdmin.storage.from('mockups').upload(path, buffer, { contentType: contentType || 'image/webp', upsert: true });
   if (error) throw error;
-  const { data: pub } = supabase.storage.from('mockups').getPublicUrl(path);
+  const { data: pub } = supaAdmin.storage.from('mockups').getPublicUrl(path);
   return { url: pub.publicUrl, path };
 }
 
